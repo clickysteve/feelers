@@ -184,7 +184,7 @@ test('control elements can be placed from the editor', async ({ page }) => {
   await page.getByTestId('el-end').click();
   await expect(page.locator('[data-testid=strip-P1] .cell.c-end')).toHaveCount(1);
   await expect(page.locator('[data-testid=strip-P1] .cell.dormant')).toHaveCount(3);
-  await expect(page.locator('[data-testid=strip-P1] .cyc')).toHaveText('3 steps');
+  await expect(page.locator('[data-testid=strip-P1] .cyc')).toHaveText('×3');
   await page.getByTestId('el-v').click();
   await expect(page.locator('[data-testid=strip-P1] .cell.c-end')).toHaveCount(0);
 });

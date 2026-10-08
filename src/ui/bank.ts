@@ -193,7 +193,7 @@ export class BankView {
       h('button', { class: 'cell add', help: 'Add a cell at the end of this series.', 'aria-label': `Add cell to ${s.name}`, onclick: () => this.app.appendCell(s.id) }, '+'),
     );
     const cyc = cycleLength(s);
-    entry.info.textContent = cyc ? `${cyc} step${cyc === 1 ? '' : 's'}` : 'empty';
+    entry.info.textContent = cyc ? `×${cyc}` : '∅';
     entry.info.dataset.help = `A lone head repeats this series every ${cyc} reads (counting loops and skips). Lines combine series of different lengths, so their notes repeat only after the least common multiple.`;
   }
 

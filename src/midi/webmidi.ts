@@ -62,6 +62,8 @@ export class MidiAccess {
       };
       return this.status;
     }
+    this.status = { state: 'pending', message: 'Asking the browser for MIDI access…' };
+    this.events.onPortsChanged([]);
     try {
       this.access = await navigator.requestMIDIAccess({ sysex: false });
     } catch (err) {

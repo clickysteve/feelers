@@ -45,7 +45,7 @@ export class TopBar {
     this.midiSel = h('select', { 'aria-label': 'MIDI output', help: 'MIDI output device. The four lines send on their own channels.', 'data-testid': 'midi-out' });
     this.midiSel.addEventListener('change', () => app.selectPort(this.midiSel.value || null));
     this.midiNote = h('span', { class: 'midi-note', 'data-testid': 'midi-status' });
-    this.clockBtn = h('button', { class: 'small', help: 'Send MIDI Clock (24 per quarter) with Start / Stop / Continue so external sequencers and modules follow Feelers.', 'data-testid': 'clock', onclick: () => app.setOption('clockOut', !app.project.options.clockOut) }, 'CLOCK OUT');
+    this.clockBtn = h('button', { class: 'small', help: 'Send MIDI Clock (24 per quarter) with Start / Stop / Continue so external sequencers and modules follow Feelers.', 'data-testid': 'clock', onclick: () => app.setOption('clockOut', !app.project.options.clockOut) }, 'CLOCK');
     this.previewBtn = h('button', { class: 'small', help: 'Built-in audio preview: a simple synth that plays whatever is sent to MIDI. It is only a listener; MIDI output is unaffected.', 'data-testid': 'preview', onclick: () => void app.togglePreview() }, '♪ PREVIEW');
     this.mem = h('span', { class: 'mem', role: 'group', 'aria-label': 'Performance memories' });
     this.title = h('input', { class: 'title', value: app.project.name, 'aria-label': 'Project name', help: 'Project name.' });
@@ -94,7 +94,7 @@ export class TopBar {
 
   updateMidi(): void {
     const app = this.app;
-    const opts = [h('option', { value: '' }, app.access.status.state === 'ready' ? '— no output (preview only) —' : '— MIDI off —')];
+    const opts = [h('option', { value: '' }, app.access.status.state === 'ready' ? 'No output (preview only)' : 'MIDI unavailable')];
     for (const p of app.ports) opts.push(h('option', { value: p.id, disabled: !p.connected }, `${p.name}${p.connected ? '' : ' (disconnected)'}`));
     replace(this.midiSel, ...opts);
     this.midiSel.value = app.selectedPort && app.ports.some((p) => p.id === app.selectedPort) ? app.selectedPort : '';

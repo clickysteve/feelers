@@ -88,9 +88,9 @@ export class LinesView {
         value: cfg().program ?? -1,
         min: -1,
         max: 127,
-        format: (v) => (v < 0 ? '—' : String(v)),
-        parse: (s) => (s.trim() === '' || s.trim() === '—' ? -1 : Number(s)),
-        help: 'Program change for this line (— for none). Sent when changed and, if enabled, on Start.',
+        format: (v) => (v < 0 ? 'off' : String(v)),
+        parse: (s) => (s.trim() === '' || s.trim().toLowerCase() === 'off' ? -1 : Number(s)),
+        help: 'Program change for this line (off for none). Sent when changed and, if enabled, on Start.',
         onChange: (v) => app.setProgram(i, v < 0 ? null : v),
       }),
       transpose: stepper({ label: 'TRANS', value: cfg().transpose, min: -48, max: 48, big: 12, help: 'Transpose this line in semitones (shift: octaves). The series stay unchanged.', testid: `transpose-${i}`, onChange: (v) => { cfg().transpose = v; app.lineChanged(); } }),
@@ -140,7 +140,7 @@ export class LinesView {
       assembly[k] = h('span', { class: 'asm-v' }, '·');
       return h('div', { class: 'head-row' }, h('span', { class: 'kl' }, KIND_SHORT[k]), select, dir, pos, assembly[k]);
     });
-    const result = h('span', { class: 'result' }, '—');
+    const result = h('span', { class: 'result' }, '·');
     const count = h('span', { class: 'count' });
 
     const root = h(
@@ -189,8 +189,10 @@ export class LinesView {
       c.steppers.transpose.setValue(cfg.transpose);
       c.steppers.vel.setValue(cfg.velOffset);
       c.steppers.scale.setValue(cfg.timeScale);
-      c.delay.textContent = app.transport === 'stopped' ? `${cfg.delay}t` : 'live';
-      c.delay.dataset.help = app.transport === 'stopped' ? 'Entry delay in ticks after Start.' : 'Each press moves the line 3 ticks (shift: 24) against the others.';
+      const sh = app.shifts[i] ?? 0;
+      c.delay.textContent = app.transport === 'stopped' ? `${cfg.delay}t` : `${sh > 0 ? '+' : ''}${sh}t`;
+      c.delay.dataset.help =
+        app.transport === 'stopped' ? 'Entry delay in ticks after Start.' : 'Live shift since Start. Each press moves the line 3 ticks (shift: 24) against the others.';
       for (const k of KINDS) {
         const hd = rt.heads[k];
         c.heads[k].select.value = hd.series;
@@ -219,7 +221,7 @@ export class LinesView {
   private showAssembly(c: Card, ev: NoteEvent | null): void {
     if (!ev) {
       for (const k of KINDS) c.assembly[k].textContent = '·';
-      c.result.textContent = '—';
+      c.result.textContent = '·';
       return;
     }
     const r = ev.reads;

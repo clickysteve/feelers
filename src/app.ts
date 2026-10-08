@@ -51,6 +51,8 @@ export class App {
   /** Visual state: what each head last sounded (updated at sounding time). */
   display: Record<Kind, DisplayHead | null>[] = [];
   lastNotes: (NoteEvent | null)[] = [null, null, null, null];
+  /** Live shifts applied to each line since Start, in ticks (for display). */
+  shifts = [0, 0, 0, 0];
   /** Notes waiting to be shown at their sounding time. */
   private visualQueue: { ms: number; ev: NoteEvent; offMs: number }[] = [];
   noteListeners = new Set<(ev: NoteEvent, offMs: number) => void>();
@@ -89,6 +91,7 @@ export class App {
     this.sched.on((e) => {
       if (e.type === 'transport') {
         if (e.state === 'stopped') {
+          this.shifts = [0, 0, 0, 0];
           this.visualQueue = [];
           this.resetDisplay();
         }
@@ -243,7 +246,10 @@ export class App {
   // MIDI devices
 
   async requestMidi(): Promise<void> {
-    const st = await this.access.request();
+    const pending = this.access.request();
+    this.midiMessage = this.access.status.message;
+    this.emit('midi');
+    const st = await pending;
     this.midiMessage = st.message;
     this.ports = this.access.ports();
     if (st.state === 'ready' && !this.selectedPort && this.ports.length) {
@@ -364,7 +370,11 @@ export class App {
       cfg.delay = Math.max(0, cfg.delay + delta);
       this.engine.lines[line]!.nextTick = cfg.delay;
       this.emit('lines');
-    } else this.engine.nudge(line, delta, this.sched.at());
+    } else {
+      this.engine.nudge(line, delta, this.sched.at());
+      this.shifts[line]! += delta;
+      this.emit('lines');
+    }
   }
 
   /** Direction: while stopped this edits the starting direction. */

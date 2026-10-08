@@ -155,7 +155,7 @@ input.num.wide {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 14px;
+  gap: 6px 10px;
   padding: 7px 14px;
   background: var(--panel);
   border-bottom: 2px solid var(--ink);
@@ -227,14 +227,19 @@ body[data-transport='playing'] .tbtn.start {
 }
 
 .title {
-  width: 170px;
+  width: 132px;
   font-weight: 700;
 }
 
 .mem {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
+}
+
+.mem .slot {
+  min-width: 18px;
+  padding: 1px 3px;
 }
 
 .mem .slot.full {
@@ -406,7 +411,7 @@ body[data-transport='playing'] .tbtn.start {
 
 .strip {
   display: grid;
-  grid-template-columns: 178px minmax(0, 1fr);
+  grid-template-columns: 150px minmax(0, 1fr);
   border-bottom: 1px solid var(--soft);
   min-width: 0;
 }
@@ -431,7 +436,7 @@ body[data-transport='playing'] .tbtn.start {
 .strip-head .cyc {
   font-size: 10px;
   color: var(--muted);
-  width: 48px;
+  width: 26px;
 }
 
 .strip-tools {
@@ -454,12 +459,16 @@ body[data-transport='playing'] .tbtn.start {
   gap: 2px;
 }
 
+.strip-head b {
+  font-size: 12px;
+}
+
 .cell {
   position: relative;
   flex: 0 0 auto;
-  min-width: 40px;
-  height: 34px;
-  padding: 12px 3px 1px;
+  min-width: 38px;
+  height: 30px;
+  padding: 10px 3px 0;
   border: 1.5px solid var(--ink);
   background: #fff;
   text-transform: none;
@@ -954,6 +963,40 @@ button.link {
 @media (max-width: 1280px) {
   .lines {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1600px) {
+  .tag {
+    display: none;
+  }
+}
+
+/* Wide screens: the bank and the four lines side by side, field below. */
+@media (min-width: 1360px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(600px, 0.85fr);
+    grid-template-areas: 'bank lines' 'mon mon';
+    align-items: start;
+  }
+  .bank-wrap {
+    grid-area: bank;
+  }
+  .lines {
+    grid-area: lines;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .monitor {
+    grid-area: mon;
+  }
+}
+
+@media (min-width: 2100px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr) minmax(1000px, 1fr);
+  }
+  .lines {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 
