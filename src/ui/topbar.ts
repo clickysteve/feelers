@@ -183,7 +183,7 @@ export class MenuPanel {
     const notes = h('textarea', { class: 'notes', rows: 4, 'aria-label': 'Project notes' }, app.project.notes);
     notes.addEventListener('change', () => {
       app.project.notes = notes.value.slice(0, 4000);
-      app.emit('project');
+      app.scheduleSave();
     });
     notes.addEventListener('keydown', (e) => e.stopPropagation());
 

@@ -82,7 +82,7 @@ export function helpContent(): HTMLElement {
       h('dt', {}, 'LINK'),
       h('dd', {}, 'The head continues into the next series of the same kind, so two strips can act as one long series.'),
       h('dt', {}, '? WOBBLE / ~ DRIFT'),
-      h('dd', {}, 'Randomised values. Wobble displaces the value read; Drift keeps the displacement. Set the step (Amount, Type), probability and limits with the ⚄ button on each series.'),
+      h('dd', {}, 'Randomised values. Wobble displaces the value read; Drift keeps the displacement. Set the step (Amount, Type), probability and limits with the ± button on each series.'),
     ),
     h('h3', {}, 'Transport'),
     h(

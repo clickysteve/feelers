@@ -411,7 +411,7 @@ body[data-transport='playing'] .tbtn.start {
 
 .strip {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 160px minmax(0, 1fr);
   border-bottom: 1px solid var(--soft);
   min-width: 0;
 }
@@ -436,7 +436,7 @@ body[data-transport='playing'] .tbtn.start {
 .strip-head .cyc {
   font-size: 10px;
   color: var(--muted);
-  width: 26px;
+  width: 32px;
 }
 
 .strip-tools {

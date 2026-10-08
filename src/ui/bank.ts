@@ -128,7 +128,7 @@ export class BankView {
             this.build();
           },
         },
-        '⚄',
+        '±',
       ),
     );
     const root = h(

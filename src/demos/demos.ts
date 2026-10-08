@@ -113,7 +113,7 @@ const drift = (): Project =>
     tempo: 96,
     seed: 2026,
     notes:
-      'Randomised cells. P1 is marked DRIFT (~): each read may move a note by a fourth or fifth (amount 5, type 1 gives +/-5; P1 uses limits so it stays in range) ' +
+      'Randomised cells. P1 is marked DRIFT (~): each read may move a note up or down a fourth (amount 5, type 1), and limits keep it in range. ' +
       'and the change is kept, so the melody wanders. P2 is marked WOBBLE (?): octave displacements that never stick. ' +
       'V1 drifts gently with gaussian steps. Press Stop then Start: the seed makes the whole walk repeat exactly.',
     series: [

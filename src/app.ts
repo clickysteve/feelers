@@ -148,7 +148,7 @@ export class App {
     this.emit('status');
   }
 
-  private scheduleSave(): void {
+  scheduleSave(): void {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => saveCurrent(this.project), 800);
   }
@@ -239,7 +239,7 @@ export class App {
   }
   setTempo(bpm: number): void {
     this.sched.setTempo(bpm);
-    this.emit('project');
+    this.scheduleSave();
   }
 
   // -------------------------------------------------------------------
@@ -315,7 +315,8 @@ export class App {
 
   rename(name: string): void {
     this.project.name = name.trim() || 'Untitled';
-    this.emit('project');
+    this.emit('transport');
+    this.scheduleSave();
   }
 
   setOption(k: keyof Project['options'], v: boolean): void {
@@ -355,6 +356,10 @@ export class App {
   }
 
   step(line: number): void {
+    if (this.transport === 'playing' && !this.engine.lines[line]!.paused) {
+      this.setStatus(`Pause line ${line + 1} first: STEP plays one note at a time from a paused line.`);
+      return;
+    }
     this.sched.stepLine(line);
   }
 
@@ -437,7 +442,7 @@ export class App {
       for (let l = 0; l < 4; l++) if (this.engine.cfg(l).mute) this.sched.releaseLine(l);
       this.setStatus(`Recalled performance memory ${i + 1}.`);
       this.emit('lines');
-      this.emit('project');
+      this.emit('heads');
     }
     this.emit('snapshots');
   }

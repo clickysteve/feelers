@@ -123,7 +123,7 @@ export class EditorView {
         'span',
         { class: 'grp seggrp', role: 'group', 'aria-label': 'Randomisation' },
         randBtn(0, 'FIXED', 'This value is never randomised.'),
-        randBtn(1, '? WOBBLE', 'Wobble: when read, the value may be displaced (see the series ⚄ settings); the stored value stays.'),
+        randBtn(1, '? WOBBLE', 'Wobble: when read, the value may be displaced (see the series ± settings); the stored value stays.'),
         randBtn(2, '~ DRIFT', 'Drift: when read, the value may be displaced and the change is kept, so it wanders.'),
       ),
       h(

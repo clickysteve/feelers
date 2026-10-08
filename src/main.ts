@@ -45,6 +45,8 @@ document.addEventListener('keydown', (e) => {
   if (target.matches('input, textarea, select') || e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.code === 'Space') {
     e.preventDefault();
+    // Do not let a focused button also receive the key as a click.
+    if (target instanceof HTMLButtonElement) target.blur();
     app.togglePlay();
     return;
   }
