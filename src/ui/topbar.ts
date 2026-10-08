@@ -9,6 +9,20 @@ import { deleteFromLibrary, listLibrary, loadFromLibrary } from '../persistence/
 import { takeToMidi } from '../persistence/takes';
 import { download, h, replace, stepper, type Stepper } from './dom';
 
+const SYNC_LABEL = { internal: '', 'no-input': 'NO INPUT', waiting: 'WAITING', clock: 'CLOCK', running: 'RUNNING', stopped: 'STOPPED', lost: 'LOST' } as const;
+
+const SYNC_HELP = {
+  internal: '',
+  'no-input': 'Choose the MIDI input that sends clock.',
+  waiting: 'No clock arriving. Start the clock source, or check the cable and input.',
+  clock: 'Clock arriving; waiting for Start (FA) or Continue (FB) from the device. Clock alone never starts Feelers.',
+  running: 'Following the incoming clock.',
+  stopped: 'Stopped by the device (FC). Continue (FB) resumes from here; Start (FA) begins afresh.',
+  lost: 'Clock stopped arriving while running. Notes released, position held: the next clock pulse carries on.',
+} as const;
+
+const TRANSPORT_BYTE = { Start: 'FA', Continue: 'FB', Stop: 'FC' } as const;
+
 export class TopBar {
   el: HTMLElement;
   private startBtn!: HTMLButtonElement;
@@ -22,6 +36,12 @@ export class TopBar {
   private previewBtn!: HTMLButtonElement;
   private mem!: HTMLElement;
   private title!: HTMLInputElement;
+  private syncInt!: HTMLButtonElement;
+  private syncExt!: HTMLButtonElement;
+  private inSel!: HTMLSelectElement;
+  private syncChip!: HTMLElement;
+  private inBpm!: HTMLElement;
+  private pulseEl!: HTMLElement;
 
   constructor(private app: App, private menu: MenuPanel) {
     this.el = h('header', { class: 'topbar' });
@@ -41,7 +61,17 @@ export class TopBar {
     this.pauseBtn = h('button', { class: 'tbtn', help: 'Pause keeps every head, loop count and line timing; Continue carries on from exactly there. Space.', 'data-testid': 'pause', onclick: () => (app.transport === 'paused' ? app.resume() : app.pause()) }, '❚❚ PAUSE');
     this.stopBtn = h('button', { class: 'tbtn', help: 'Stop/Reset: silence everything now and return to the beginning. Esc.', 'data-testid': 'stop', onclick: () => app.stop() }, '■ STOP');
     this.tempo = stepper({ label: 'BPM', value: app.project.tempo, min: 10, max: 400, big: 10, help: 'Tempo in beats per minute. Changes apply within one scheduling window (about 0.1 s).', testid: 'tempo', onChange: (v) => app.setTempo(v) });
-    this.pos = h('span', { class: 'readout pos', help: 'Transport position (bar.beat, counting 4/4) as sent to MIDI clock.' }, '1.1');
+    this.tempo.classList.add('tempo-step');
+    this.inBpm = h('span', { class: 'readout in-bpm', help: 'Tempo measured from the incoming MIDI Clock. Display only: the clock pulses themselves drive Feelers.', 'data-testid': 'sync-bpm' }, '---');
+    this.pos = h('span', { class: 'readout pos', help: 'Transport position (bar.beat, counting 4/4). Under external clock it advances one tick per incoming pulse.', 'data-testid': 'position' }, '1.1');
+    const seg = (label: string, src: 'internal' | 'external', help: string) =>
+      h('button', { class: 'seg', help, 'data-testid': `clock-${src === 'internal' ? 'int' : 'ext'}`, onclick: () => app.setClockSource(src) }, label);
+    this.syncInt = seg('INT', 'internal', 'Internal clock: Feelers sets the tempo and runs its own transport (START / PAUSE / STOP).');
+    this.syncExt = seg('EXT', 'external', 'External MIDI Clock: follow 24 PPQN clock from a MIDI input. The device sends Start, Stop and Continue; its clock pulses drive every note.');
+    this.inSel = h('select', { 'aria-label': 'Clock input', help: 'MIDI input that supplies clock (for example a Squarp Hermod+ over USB).', 'data-testid': 'midi-in' });
+    this.inSel.addEventListener('change', () => app.selectInput(this.inSel.value || null));
+    this.syncChip = h('span', { class: 'sync-chip', 'data-testid': 'sync-status', role: 'status' }, '');
+    this.pulseEl = h('span', { class: 'pulses', 'data-testid': 'sync-pulses', help: 'Clock pulses received from the input, and the last transport message (FA Start, FB Continue, FC Stop).' }, '');
     this.midiSel = h('select', { 'aria-label': 'MIDI output', help: 'MIDI output device. The four lines send on their own channels.', 'data-testid': 'midi-out' });
     this.midiSel.addEventListener('change', () => app.selectPort(this.midiSel.value || null));
     this.midiNote = h('span', { class: 'midi-note', 'data-testid': 'midi-status' });
@@ -55,7 +85,16 @@ export class TopBar {
     replace(
       this.el,
       h('div', { class: 'brand', help: 'Feelers: four musical lines, each assembled from independently moving parameter series.' }, h('span', { class: 'logo' }, 'FEELERS'), h('span', { class: 'tag' }, 'put out the feelers')),
-      h('div', { class: 'tgroup' }, this.startBtn, this.pauseBtn, this.stopBtn, this.tempo, this.pos),
+      h('div', { class: 'tgroup' }, this.startBtn, this.pauseBtn, this.stopBtn, this.tempo, this.inBpm, this.pos),
+      h(
+        'div',
+        { class: 'tgroup sync' },
+        h('span', { class: 'lbl', help: 'Clock source.' }, 'SYNC'),
+        h('span', { class: 'seggrp', role: 'group', 'aria-label': 'Clock source' }, this.syncInt, this.syncExt),
+        this.inSel,
+        this.syncChip,
+        this.pulseEl,
+      ),
       h('div', { class: 'tgroup' }, h('span', { class: 'lbl' }, 'MIDI'), this.midiSel, this.clockBtn, h('button', { class: 'small warn', help: 'Panic: release every note and send All Notes Off / All Sound Off on all 16 channels.', 'data-testid': 'panic', onclick: () => app.panic() }, 'PANIC'), this.previewBtn),
       h('div', { class: 'tgroup' }, this.mem),
       h(
@@ -74,13 +113,29 @@ export class TopBar {
 
   update(): void {
     const st = this.app.transport;
+    const ext = this.app.external;
+    this.el.classList.toggle('ext', ext);
     this.startBtn.classList.toggle('on', st === 'playing');
+    this.startBtn.disabled = ext;
     this.pauseBtn.textContent = st === 'paused' ? '▶ CONTINUE' : '❚❚ PAUSE';
     this.pauseBtn.classList.toggle('on', st === 'paused');
-    this.pauseBtn.disabled = st === 'stopped';
+    this.pauseBtn.disabled = ext || st === 'stopped';
     this.tempo.setValue(this.app.sched.bpm);
-    this.clockBtn.classList.toggle('on', this.app.project.options.clockOut);
-    this.clockBtn.setAttribute('aria-pressed', String(this.app.project.options.clockOut));
+    this.syncInt.classList.toggle('on', !ext);
+    this.syncExt.classList.toggle('on', ext);
+    this.syncInt.setAttribute('aria-pressed', String(!ext));
+    this.syncExt.setAttribute('aria-pressed', String(ext));
+    const clockOn = this.app.project.options.clockOut && !ext;
+    this.clockBtn.disabled = ext;
+    this.clockBtn.classList.toggle('on', clockOn);
+    this.clockBtn.setAttribute('aria-pressed', String(clockOn));
+    this.clockBtn.dataset.help = ext
+      ? 'Clock out is off while following an external clock, so clock is never echoed back to its source. It returns when you switch to INT.'
+      : 'Send MIDI Clock (24 per quarter) with Start / Stop / Continue so external sequencers and modules follow Feelers.';
+    this.startBtn.dataset.help = ext
+      ? 'Following external clock: the device sends Start (FA). STOP here still stops and resets.'
+      : 'Start: begin the performance from its defined starting state (heads at their start cells, random seed reset). Space.';
+    this.tick();
     if (document.activeElement !== this.title) this.title.value = this.app.project.name;
     document.body.dataset.transport = st;
   }
@@ -90,10 +145,28 @@ export class TopBar {
     const t = this.app.sched.positionTick();
     const beat = Math.floor(t / PPQ);
     this.pos.textContent = `${Math.floor(beat / 4) + 1}.${(beat % 4) + 1}`;
+    if (!this.app.external) return;
+    const sched = this.app.sched;
+    const bpm = sched.pulses.bpm();
+    const recent = performance.now() - sched.ext.lastPulseMs < 500;
+    this.inBpm.textContent = bpm !== null && recent ? bpm.toFixed(1) : '---';
+    const status = sched.syncStatus();
+    const label = SYNC_LABEL[status];
+    if (this.syncChip.textContent !== label) {
+      this.syncChip.textContent = label;
+      this.syncChip.dataset.state = status;
+      this.syncChip.dataset.help = SYNC_HELP[status];
+    }
+    const last = sched.ext.lastTransport;
+    this.pulseEl.textContent = `F8×${sched.ext.pulseCount}${last ? ` · ${TRANSPORT_BYTE[last]}` : ''}`;
   }
 
   updateMidi(): void {
     const app = this.app;
+    const ins = [h('option', { value: '' }, app.inputs.length ? 'Choose clock input…' : app.access.status.state === 'ready' ? 'No MIDI inputs' : 'MIDI unavailable')];
+    for (const p of app.inputs) ins.push(h('option', { value: p.id, disabled: !p.connected }, `${p.name}${p.connected ? '' : ' (disconnected)'}`));
+    replace(this.inSel, ...ins);
+    this.inSel.value = app.selectedInput && app.inputs.some((p) => p.id === app.selectedInput) ? app.selectedInput : '';
     const opts = [h('option', { value: '' }, app.access.status.state === 'ready' ? 'No output (preview only)' : 'MIDI unavailable')];
     for (const p of app.ports) opts.push(h('option', { value: p.id, disabled: !p.connected }, `${p.name}${p.connected ? '' : ' (disconnected)'}`));
     replace(this.midiSel, ...opts);

@@ -132,7 +132,9 @@ export class MonitorView {
 
   private drawLog(): void {
     const m = this.app.monitor;
-    this.clockEl.textContent = this.app.clockCount ? `clock ×${this.app.clockCount}` : '';
+    const out = this.app.clockCount ? `clock out ×${this.app.clockCount}` : '';
+    const inn = this.app.external ? `clock in ×${this.app.sched.ext.pulseCount}` : '';
+    this.clockEl.textContent = [inn, out].filter(Boolean).join('  ');
     if (!this.logOpen || m.length === 0) return;
     const lastT = m[m.length - 1]!.t + m.length;
     if (lastT === this.lastLog) return;

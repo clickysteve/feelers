@@ -1,7 +1,9 @@
 /**
  * Simulated Web MIDI for browser tests. Installed before the app loads; it
  * records every message with its timestamp in window.__midi.sent and lets a
- * test unplug or replug the device. No physical hardware is involved.
+ * test unplug or replug the device. It also offers one input port that can
+ * stream MIDI Clock and transport bytes (window.__midi.clockStart etc.).
+ * No physical hardware is involved.
  */
 export const installFakeMidi = (): void => {
   type Msg = { bytes: number[]; t: number; at: number };
@@ -25,8 +27,24 @@ export const installFakeMidi = (): void => {
     },
   };
   const outputs = new Map([[port.id, port]]);
-  const fire = () => {
-    const e = { port };
+  const input = {
+    id: 'fake-in-1',
+    name: 'Feelers Test Clock',
+    manufacturer: 'Simulated',
+    type: 'input',
+    state: 'connected',
+    connection: 'open',
+    onmidimessage: null as null | ((e: { data: Uint8Array; timeStamp: number }) => void),
+  };
+  const inputs = new Map([[input.id, input]]);
+  const deliver = (bytes: number[]) => {
+    if (input.state !== 'connected') return;
+    input.onmidimessage?.({ data: new Uint8Array(bytes), timeStamp: performance.now() });
+  };
+  let clockTimer: ReturnType<typeof setInterval> | null = null;
+  let clockPulses = 0;
+  const fire = (p: unknown = port) => {
+    const e = { port: p };
     accessRef?.onstatechange?.(e);
     listeners.forEach((l) => l(e));
   };
@@ -43,11 +61,38 @@ export const installFakeMidi = (): void => {
     reset() {
       sent.length = 0;
     },
+    /** Send raw bytes from the input (e.g. [0xfa]). */
+    sendIn(bytes: number[]) {
+      deliver(bytes);
+    },
+    /** Stream F8 at a tempo until clockStop(). */
+    clockStart(bpm: number) {
+      if (clockTimer) clearInterval(clockTimer);
+      clockTimer = setInterval(() => {
+        clockPulses++;
+        deliver([0xf8]);
+      }, 60000 / (bpm * 24));
+    },
+    clockStop() {
+      if (clockTimer) clearInterval(clockTimer);
+      clockTimer = null;
+    },
+    get clockPulses() {
+      return clockPulses;
+    },
+    unplugIn() {
+      input.state = 'disconnected';
+      fire(input);
+    },
+    replugIn() {
+      input.state = 'connected';
+      fire(input);
+    },
   };
   Object.defineProperty(navigator, 'requestMIDIAccess', {
     configurable: true,
     value: async () => {
-      const access = { inputs: new Map(), outputs, sysexEnabled: false, onstatechange: null as ((e: unknown) => void) | null, addEventListener: (_: string, l: (e: unknown) => void) => listeners.push(l) };
+      const access = { inputs, outputs, sysexEnabled: false, onstatechange: null as ((e: unknown) => void) | null, addEventListener: (_: string, l: (e: unknown) => void) => listeners.push(l) };
       accessRef = access;
       return access;
     },

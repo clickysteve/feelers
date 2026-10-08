@@ -268,6 +268,79 @@ body[data-transport='playing'] .tbtn.start {
   color: var(--warn);
 }
 
+/* ------------------------------------------------------------------ sync */
+
+.topbar .in-bpm,
+.topbar .tgroup.sync select,
+.topbar .tgroup.sync .sync-chip,
+.topbar .tgroup.sync .pulses {
+  display: none;
+}
+
+.topbar.ext .tempo-step {
+  display: none;
+}
+
+.topbar.ext .in-bpm,
+.topbar.ext .tgroup.sync select,
+.topbar.ext .tgroup.sync .sync-chip,
+.topbar.ext .tgroup.sync .pulses {
+  display: inline-block;
+}
+
+.in-bpm::before {
+  content: 'IN ';
+  color: #5c7a66;
+}
+
+.tgroup.sync .seggrp button.seg {
+  font-size: 11px;
+  padding: 2px 6px;
+}
+
+.tgroup.sync select {
+  max-width: 170px;
+}
+
+.sync-chip {
+  padding: 2px 6px;
+  border: 1.5px solid var(--ink);
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  background: var(--soft);
+}
+
+.sync-chip[data-state='running'] {
+  background: var(--l3);
+  color: #fff;
+}
+
+.sync-chip[data-state='clock'] {
+  background: var(--l2);
+  color: #fff;
+}
+
+.sync-chip[data-state='stopped'] {
+  background: var(--sel);
+}
+
+.sync-chip[data-state='lost'],
+.sync-chip[data-state='no-input'] {
+  background: var(--warn);
+  color: #fff;
+}
+
+.sync-chip[data-state='lost'] {
+  animation: blink 1s steps(2) infinite;
+}
+
+.pulses {
+  font-size: 10.5px;
+  color: var(--muted);
+  min-width: 70px;
+}
+
 /* ------------------------------------------------------------------ layout */
 
 .layout {

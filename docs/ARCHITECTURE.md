@@ -159,6 +159,62 @@ See [FORMAT.md](FORMAT.md). The current project autosaves to localStorage
 and import use the same versioned format. Loading always goes through
 validation and repair.
 
+## External clock
+
+The clock source is INTERNAL (above) or EXTERNAL. EXTERNAL is a modern
+interoperability feature; it makes no claim about how Fingers synchronised.
+
+**Pulses are ticks.** The engine already measures time in ticks at 24 per
+quarter note, the MIDI Clock resolution, so incoming F8 pulse *n* after Start
+*is* engine tick *n*. Nothing is converted to a tempo and back.
+
+**Per-pulse scheduling.** When pulse *k* arrives at time *T* (the Web MIDI
+event timestamp, sanity-checked against `performance.now()`), the scheduler
+calls the same `advance()` routine INTERNAL uses, with horizon *k + 1*:
+
+- events at exactly tick *k* (and note-offs due at *k*) are sent at *T*;
+- events at a fractional tick *k + f* (Time Adjust, articulation, shifts) are
+  sent at *T + f x P*, where *P* is the mean of the last six pulse intervals.
+
+The engine never runs ahead of the pulse that has actually arrived, so it
+never assembles notes for time that may not come. Integer-tick events
+are exactly on their pulse. A fractional event can be early or late by at
+most *f* times the tempo change within one pulse, and it is still released
+on the pulse that precedes it. Note-offs are queued exactly as under
+INTERNAL and leave only when their pulse arrives, so long notes, legato
+overlap and monophonic cuts all follow the incoming clock.
+
+**Transport.**
+
+| Byte | Effect |
+| --- | --- |
+| FA Start | `engine.reset()` (starting state, seed), release any notes, wait: the next F8 is tick 0. |
+| F8 Clock | Running: advance one tick. Stopped: tempo display only; never starts. |
+| FC Stop | Release held notes (at the time the next pulse was due, so notes already sent for this pulse are not overtaken), keep the position and engine state. |
+| FB Continue | Resume from the stop position (or from the beginning if never started). Nothing is reset. |
+
+**Loss.** A watchdog (the same ticker, every 25 ms) marks the clock LOST if no
+pulse has arrived for 500 ms while running. Unplugging or changing the input
+does the same at once. LOST releases every held note, keeps the transport
+running (no FC was received) and holds the position. The next F8 carries on.
+There is no fallback to internal time and no free-running at an estimated
+tempo.
+
+**Tempo estimate** (`src/scheduler/pulses.ts`): a least-squares fit of pulse
+arrival times over the last two beats, shown with hysteresis so jitter does
+not make it flicker. A gap longer than four pulse periods (or 1 s) starts a
+new measurement. It is display only (and the between-pulse placement above
+uses the short-window period, not this figure).
+
+**Clock out** is forced off while EXTERNAL (`Scheduler.clockOut`), so clock
+can never be echoed back to its source. There is no clock-thru.
+
+**What differs from INTERNAL.** INTERNAL schedules 100 ms ahead with exact
+timestamps, so browser jitter never reaches the notes. EXTERNAL cannot know
+future pulses: output timing inherits the incoming clock's timing plus the
+browser's input latency and jitter (event timestamps are used where the
+browser provides them).
+
 ## Testing
 
 - `tests/unit` (Vitest, Node): traversal and control elements, randomisation
@@ -179,8 +235,7 @@ No physical MIDI hardware has been tested by the automated suite.
 - **Controllers.** Everything a performer can do is an `Engine` or `App`
   method taking an `at` tick. A MIDI-CC mapper or an X/Y gesture surface can
   call the same methods (see [MIDI-AX.md](MIDI-AX.md)).
-- **External clock.** A future `ExternalClockTicker` can replace the anchor
-  with incoming F8 pulses; the engine is unaffected because it only sees
-  ticks.
+- **External clock.** Implemented in the scheduler (see above); the engine
+  is unaffected because it only sees ticks.
 - **More control elements.** Add a `Cell` variant and a case in `readHead()`;
   the UI renders unknown kinds generically.
