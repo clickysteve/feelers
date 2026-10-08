@@ -23,11 +23,20 @@ section, not that file, explains its scope.
 - All code, wording, interface design, graphics and demonstration material
   were written for Feelers.
 - No original source code, binaries, disk images, graphical assets, fonts,
-  manuals or manual text, factory presets or example files are included. None
-  were obtained during development.
-- Historical behaviour was reconstructed from published reviews and
-  documentation (listed in [RESEARCH.md](RESEARCH.md)). Short phrases from
-  those sources appear in the research notes for identification only.
+  manuals or manual text, factory presets or example files are included.
+- The first versions were reconstructed from published reviews (listed in
+  [RESEARCH.md](RESEARCH.md)). For the historical audit (October 2026) the
+  repository owner supplied copies of the Fingers manual, the MIDI-AX
+  preliminary reference, original example notes and `.FIN` score files, and
+  later contemporary articles. These were read outside the repository, for
+  research only; none of them, and no extract longer than a short phrase, is
+  in the repository or its history. The audit
+  ([HISTORICAL_AUDIT.md](HISTORICAL_AUDIT.md)) cites them by chapter and
+  section. The `.FIN` files were examined for structure only and were not
+  run.
+- Behaviour learned from those sources is re-expressed in Feelers' own code,
+  words and interface. Short phrases appear in the documentation for
+  identification only.
 - MIDI-AX was released as shareware in 2001 on stated conditions. That does
   not make it, or Fingers, public domain or freely redistributable, and
   Feelers does not treat it as such.
@@ -47,10 +56,13 @@ the Git history was reviewed. Findings:
   files exist in any commit, and no file was ever added and later deleted.
 - The only icon is an inline SVG favicon drawn for Feelers. No external fonts
   are loaded; the interface uses the system monospace font.
-- UI labels (PAUSE, MUTE, NEXT, STEP, RESET, REV, REST, SKIP, END, LINK,
-  WOBBLE, DRIFT) are plain functional words chosen for Feelers; help text is
-  original.
-- Demo data is original (see below). Test fixtures are synthetic.
+- UI labels (PAUSE, MUTE, NEXT, STEP, RESET, REV, REST, SKIP, END, LOOP,
+  WOBBLE, RESTORE, SCALE) are plain functional words chosen for Feelers; help
+  text is original.
+- Demo data is original (see below). Test fixtures are synthetic, apart from
+  `tests/fixtures/v1-golden.json`, which holds Feelers' own v1 demo projects
+  and synthetic projects with the notes the v1 Feelers engine produced for
+  them.
 - The research documents quote only short phrases and article titles from the
   cited reviews, with attribution, for identification and commentary. No
   manual text, tables or screenshots are reproduced.
@@ -59,61 +71,73 @@ No material needed removing or replacing.
 
 ## Feature provenance
 
-Categories:
+Layers (see [ARCHITECTURE.md](ARCHITECTURE.md)):
 
-- **Historical (documented)**: the concept is described in historical sources.
-  Feelers' realisation of it is still its own code and design.
-- **Reconstruction (inferred)**: the sources imply the behaviour without
-  specifying it; Feelers fills the gap with a documented decision.
-- **Independent design**: needed to make a working instrument; no historical
-  claim is made.
-- **Modern extension**: deliberately goes beyond the historical system.
+- **Fingers (documented)**: described in the Fingers manual and implemented
+  as described. Feelers' realisation is still its own code and design.
+- **Choice (unresolved)**: the sources leave it open; Feelers makes a
+  documented, tested choice ([UNCERTAINTIES.md](UNCERTAINTIES.md)).
+- **Modern facility**: common modern instrument functionality, part of the
+  core instrument, not a Fingers feature.
+- **Extension**: new compositional behaviour, labelled EXT in the interface.
 
-| Feature | Category | Notes |
+| Feature | Layer | Notes |
 | --- | --- | --- |
-| Four monophonic lines | Historical | |
-| Notes from separate Time, Pitch, Velocity, Articulation series | Historical | The core of the instrument. |
-| Time as inter-onset interval | Historical | |
-| Independent read position and direction per line per parameter | Historical | Directions per parameter are documented; "heads" is Feelers' term. |
-| Lines sharing series | Reconstruction | |
-| 16 series (4 per kind), up to 64 cells | Independent design | Matches the "16 columns" of later descriptions only loosely. |
-| END, LINK, loops up to 999, SKIP, REST | Historical (functions) / Reconstruction (exact rules) | Rules in BEHAVIOUR section 4. |
-| Loops running in reverse, nested loops, reverse through LINK | Reconstruction | |
-| Starting cell and direction per head | Reconstruction | |
-| Shift editing of time values | Historical | Option in the project panel. |
-| Pause, Mute, P (NEXT), Re (RESET) per line | Historical | Feelers' names; NEXT/RESET semantics partly inferred. |
-| Manual STEP of a paused line; HEAD HERE | Reconstruction / Independent design | Manual skipping is documented; these are Feelers' controls for it. |
-| MIDI channel, program, pitch transposition, velocity offset per line | Historical | |
-| Time adjust with in-between values (phasing) | Historical | Ratio presets and 0.005 steps are Feelers' design. |
-| Advance / delay (entry delay and live shift) | Historical | Units and step sizes are Feelers' design. |
-| Randomisation by Amount / Type (gaussian when 0) | Historical | |
-| Probability and limits | Historical (Pit/Tim limits) / Independent design (per series, all kinds) | |
-| WOBBLE (?) and DRIFT (~) cells | Reconstruction | Interpretation of the two auto-randomise symbols. |
-| Program changes on Start | Historical | Option. |
-| Takes: last nine performances, exported as MIDI files | Historical (nine performances) / Modern extension (SMF export) | |
-| Global Start / Pause / Continue / Stop semantics | Modern extension | Explicit design for use with external sequencers. |
-| MIDI Clock out with Start / Stop / Continue / Song Position | Modern extension | Fingers documented sync with external devices; direction unknown. |
-| External MIDI Clock input (SYNC EXT) with Start / Stop / Continue | Modern extension | Interoperability with hardware; not a reconstruction of Fingers' sync. |
-| Seeded, repeatable randomness | Modern extension | |
-| Performance memories 1-9 | Modern extension | |
-| Legato option for monophonic lines | Independent design | |
-| Series tools: rotate, retrograde, offset values | Modern extension | Editing conveniences on the material. |
-| Web MIDI device handling, panic, note-pairing safety | Independent design | |
-| Audio preview | Modern extension | A listener on the MIDI stream, never the source of truth. |
-| Project format, autosave, JSON import/export | Independent design | Not compatible with any original format. |
-| Horizontal strips, head tabs, note assembly readout, feeler field | Independent design | Not modelled on original screens. |
-| Contextual help line and help panel | Independent design | Responds to the reviewers' complaints about jargon. |
-| MIDI-AX mouse gestures, holds, sliders | Not implemented | Researched; see MIDI-AX.md. |
+| Four lines; notes from Time, Pitch, Velocity and S/L | Fingers | FM ch. 1. |
+| Independent head per line per parameter, with direction | Fingers | "Heads" is Feelers' term for line icons. |
+| Time is the wait before a note; length = next Time x S/L / 16 | Fingers | FM ch. 1, ch. 6. |
+| First note at Start plus delay, first Time value consumed | Choice | `choices.firstNoteWaits`. |
+| Typed columns of up to 16 elements; 16 columns, 4 per kind | Fingers (16-column mode) | Configurable column types not yet implemented. |
+| End of Series splitting a column into usable series | Fingers | FM ch. 3. |
+| Column Link to the next column of the same kind, wrapping | Fingers | FM ch. 3. Backward traversal across links is a choice. |
+| Control elements as attributes of elements | Fingers | FM ch. 3; `.FIN` structure. |
+| Skip (own element, keeps value, overrides Loop / rest, not End) | Fingers | FM ch. 2-3. |
+| Rest (R) and rest (r) with their advance rules | Fingers | FM ch. 3. Several rests on one note: choice. |
+| Loop slot, count 0-999, 0 forever, from series start or previous Loop, ignored backwards | Fingers | Count meaning (repeats or passes): choice. |
+| Blank elements passed over | Choice | |
+| Reversal turns at the element last read | Choice | |
+| `?` and `¿` with separate probabilities, both persistent | Fingers | FM ch. 3, ch. 6. |
+| Amount / Type per kind; gaussian with average change about Amount | Fingers | Exact gaussian scale: choice. |
+| Minimum Time; Pitch Limit relative to the range at Start; limits only on randomised values | Fingers | FM ch. 6. |
+| Restore Last Start (toggle) | Fingers | FM ch. 5. |
+| S/L in sixteenths; overlaps AS WRITTEN | Fingers | FM ch. 3. Range 1-64: choice. |
+| LEGATO and MONO overlap modes | Modern facility | Safety and glide for mono and CV gear. |
+| Pause, Mute, NEXT (P), RESET (Re), STEP, HEAD HERE | Fingers (functions) / Modern (STEP) | Pause release timing and Tim-only reset follow later (batch 2). |
+| MIDI channel, program, transposition, velocity offset per line | Fingers | |
+| Time adjust (phasing) | Fingers | Free multiplier and ratio presets are modern. |
+| Advance / delay | Fingers | Step sizes are Feelers'. |
+| Shift editing of time values | Fingers (partly) | Scope differs (audit R7). |
+| Program changes on Start | Fingers | |
+| MIDI Clock out with Start / Stop / Continue / Song Position | Fingers (clock out) / Modern (details) | Fingers could send clock (FM ch. 7). |
+| External MIDI Clock input (SYNC EXT) | Modern facility | Fingers could not follow an external clock (FM ch. 7). |
+| Global Start / Pause / Continue / Stop | Modern facility | Fingers' Stop then Con = Pause then Continue. |
+| Scale Mode (global and per line, nearest / down / up, visible changes) | Modern facility | Fingers had no scale quantiser. |
+| Palettes | Modern facility | Shared design with emmm ([DESIGN.md](DESIGN.md)). |
+| Web MIDI device handling, Panic, note-pairing safety, lookahead scheduler | Modern facility | |
+| Takes (last nine performances) as Standard MIDI Files | Fingers (recording) / Modern (SMF) | |
+| Seeded, repeatable randomness | Modern facility | |
+| Project format v2, migration from v1, autosave, JSON import / export | Modern facility | Not compatible with `.FIN`. |
+| Audio preview | Modern facility | A listener on the MIDI stream; replaces the ST sound chip. |
+| WOBBLE (`~`) | Extension | Non-persistent randomisation. |
+| Per-column randomisation settings and bounds | Extension | Fingers has one set per kind. |
+| Performance memories 1-9 | Extension | |
+| Rotate, retrograde, offset values | Extension | |
+| Horizontal strips, head tabs, transform marks, line readouts, feeler field | Independent design | Not modelled on original screens. |
+| Contextual help line and help panel | Independent design | |
+| MIDI-AX gestures, holds, sliders, line linking | Not implemented | MIDI-AX only; see MIDI-AX.md. |
 
 ## Demonstration material
 
-The five demos in `src/demos/demos.ts` (First Contact, Phase Garden,
-Clockwork, Drift, Four Lanes) were composed for Feelers. They are not derived
-from any original Fingers or MIDI-AX example file, preset or tutorial.
+The six demos in `src/demos/demos.ts` (First Contact, Phase Garden,
+Clockwork, Drift, Four Lanes, Scale Lens) were composed for Feelers. They are
+not derived from any original Fingers or MIDI-AX example file, preset or
+tutorial.
 
 ## Prior projects
 
-Feelers is the third project in a small collection of software archaeology
-experiments, after emmm (inspired by Intelligent Music's M) and FrakMC
-(inspired by Hugh McDowell's Fractal Music Composer). No code was copied from
-either.
+Feelers belongs to a small collection of independent browser MIDI
+instruments, with emmm (inspired by Intelligent Music's M), FrakMC (inspired
+by Hugh McDowell's Fractal Music Composer) and ANVIL. The palette system
+follows emmm's design (semantic roles, built-in palettes that are never
+edited, import / export, contrast warnings) and was written for Feelers; it
+can read emmm palette files. No code was copied from the other instruments.

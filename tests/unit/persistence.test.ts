@@ -28,25 +28,37 @@ describe('project format', () => {
     expect(() => deserialize({ format: 'feelers.project', version: 99, project: {} })).toThrow(/newer/);
   });
 
+  it('saves format version 2', () => {
+    expect(JSON.parse(serialize(DEMOS[0]!.build()))).toMatchObject({ format: 'feelers.project', version: 2 });
+  });
+
   it('repairs damaged data', () => {
     const p = normalizeProject({
       tempo: 9999,
-      series: [
-        { id: 'P1', kind: 'pitch', cells: [{ t: 'v', v: 300 }, { t: 'bogus' }, { t: 'close', n: 5000 }], lo: 90, hi: 10 },
-        { id: 'X', kind: 'nonsense', cells: [] },
+      minTime: -5,
+      pitchLimit: 900,
+      columns: [
+        { id: 'P1', kind: 'pitch', link: 'yes', els: [{ v: 300 }, 'bogus', { loop: 5000, rest: 'R', ar: 2 }, { v: 61, rest: 'X', ar: 9, end: true, skip: true }, ...Array.from({ length: 20 }, () => ({ v: 60 }))] },
+        { id: 'X', kind: 'nonsense', els: [] },
+        { id: 'P1', kind: 'pitch', els: [{ v: 1 }] },
       ],
-      lines: [{ channel: 40, heads: { pitch: { series: 'T1' }, time: { series: 'P1' } }, timeScale: -3 }],
+      lines: [{ channel: 40, overlap: 'sometimes', heads: { pitch: { col: 'T1', start: 3 }, time: { col: 'P1' } }, timeScale: -3 }],
     });
     expect(p.tempo).toBe(400);
-    const p1 = p.series.find((s) => s.id === 'P1')!;
-    expect(p1.cells).toEqual([{ t: 'v', v: 127 }, { t: 'close', n: 999 }]);
-    expect(p1.lo).toBeLessThanOrEqual(p1.hi);
-    expect(p.series.some((s) => s.id === 'X')).toBe(false);
-    expect(p.series.filter((s) => s.kind === 'time').length).toBe(4);
+    expect(p.minTime).toBe(1);
+    expect(p.pitchLimit).toBe(127);
+    const p1 = p.columns.find((s) => s.id === 'P1')!;
+    expect(p1.link).toBe(false);
+    expect(p1.els.slice(0, 3)).toEqual([{ v: 127 }, { v: null, loop: 999 }, { v: 61, end: true, skip: true }]);
+    expect(p1.els.length).toBeLessThanOrEqual(16);
+    expect(p.columns.some((s) => s.id === 'X')).toBe(false);
+    expect(p.columns.filter((s) => s.id === 'P1')).toHaveLength(1);
+    expect(p.columns.filter((s) => s.kind === 'time').length).toBe(4);
     expect(p.lines).toHaveLength(4);
     expect(p.lines[0]!.channel).toBe(16);
-    expect(p.lines[0]!.heads.pitch.series).toBe('P1');
-    expect(p.lines[0]!.heads.time.series).toBe('T1');
+    expect(p.lines[0]!.overlap).toBe('written');
+    expect(p.lines[0]!.heads.pitch.col).toBe('P1');
+    expect(p.lines[0]!.heads.time.col).toBe('T1');
     expect(p.lines[0]!.timeScale).toBeGreaterThan(0);
     expect(p.snapshots).toHaveLength(9);
   });
@@ -67,7 +79,7 @@ describe('snapshots', () => {
     recallSnapshot(e2, JSON.parse(JSON.stringify(snap)), 37);
     expect(e2.cfg(1).transpose).toBe(5);
     expect(e2.lines[0]!.heads.pitch.dir).toBe(-1);
-    // the snapshot stores the last-read cell, so the recalled line replays it first
+    // the snapshot stores the elements of the last note, so the recalled line replays it first
     const got = e2.generate(600).filter((n) => n.line === 0 && n.tick >= 37).map((n) => n.pitch);
     expect(got.slice(1, 6)).toEqual(expected.slice(0, 5));
   });

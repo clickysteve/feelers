@@ -178,15 +178,34 @@ test('space starts and pauses; escape stops', async ({ page }) => {
   await expect(page.locator('body')).toHaveAttribute('data-transport', 'stopped');
 });
 
-test('control elements can be placed from the editor', async ({ page }) => {
+test('control elements are marks on elements: placing and removing them keeps the value', async ({ page }) => {
   await boot(page);
-  await page.locator('[data-testid=strip-P1] .cell').nth(3).click();
-  await page.getByTestId('el-end').click();
-  await expect(page.locator('[data-testid=strip-P1] .cell.c-end')).toHaveCount(1);
-  await expect(page.locator('[data-testid=strip-P1] .cell.dormant')).toHaveCount(3);
-  await expect(page.locator('[data-testid=strip-P1] .cyc')).toHaveText('×3');
-  await page.getByTestId('el-v').click();
-  await expect(page.locator('[data-testid=strip-P1] .cell.c-end')).toHaveCount(0);
+  const strip = page.locator('[data-testid=strip-P1]');
+  await strip.locator('.cell').nth(3).click();
+  await page.getByTestId('mark-end').click();
+  await expect(strip.locator('.cell.end')).toHaveCount(1);
+  // First Contact P1 has 7 notes; END after the 4th splits it into series of 4 and 3.
+  await expect(strip.locator('.cyc')).toHaveText('×4');
+  await page.getByTestId('mark-end').click();
+  await expect(strip.locator('.cell.end')).toHaveCount(0);
+  await strip.locator('.cell').nth(1).click();
+  await page.keyboard.press('s');
+  await expect(strip.locator('.cell.skipped')).toHaveCount(1);
+  await expect(strip.locator('.cell.skipped .txt')).toHaveText('F4');
+  await page.keyboard.press('s');
+  await expect(strip.locator('.cell.skipped')).toHaveCount(0);
+  await page.keyboard.press('r');
+  await expect(strip.locator('.cell').nth(1).locator('.am')).toHaveText('R');
+  await page.keyboard.press('r');
+  await expect(strip.locator('.cell').nth(1).locator('.am')).toHaveText('r');
+  await page.getByTestId('slot-loop').click();
+  await expect(strip.locator('.cell.loop')).toHaveText(/L∞/);
+  await page.getByTestId('loop-count').fill('3');
+  await page.getByTestId('loop-count').press('Enter');
+  await expect(strip.locator('.cell.loop')).toHaveText(/L×3/);
+  await page.getByTestId('link-P1').click();
+  await expect(page.getByTestId('link-P1')).toHaveAttribute('aria-pressed', 'true');
+  await expect(strip.locator('.link-tail')).toHaveText('→P2');
 });
 
 test('autosave restores the project after a reload; export / import round-trip', async ({ page }) => {
@@ -204,7 +223,7 @@ test('autosave restores the project after a reload; export / import round-trip',
   const json = await page.evaluate(() => (window as unknown as { feelers: { exportJson(): string } }).feelers.exportJson());
   const parsed = JSON.parse(json);
   expect(parsed.format).toBe('feelers.project');
-  expect(parsed.version).toBe(1);
+  expect(parsed.version).toBe(2);
   parsed.project.name = 'Imported test';
   parsed.project.lines[2].channel = 12;
   await page.getByTestId('menu').click();
@@ -218,7 +237,9 @@ test('demos load from the project panel', async ({ page }) => {
   await page.getByTestId('menu').click();
   await page.getByTestId('demo-clockwork').click();
   await expect(page.locator('.title')).toHaveValue('Clockwork');
-  await expect(page.locator('.cell.c-link')).toHaveCount(1);
+  await expect(page.locator('.link-tail')).toHaveCount(1);
+  await expect(page.getByTestId('link-P3')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.cell.loop')).toHaveCount(2);
 });
 
 test('performance memories store and recall', async ({ page }) => {
@@ -303,4 +324,104 @@ test('the same build works under a project sub-path such as /feelers/', async ({
   expect(urls.filter((u) => u.includes('/assets/')).every((u) => u.includes('/feelers/assets/'))).toBe(true);
   expect(failed).toEqual([]);
   expect(errors).toEqual([]);
+});
+
+test('Scale Mode shows what it transforms, in the bank and in the line panels', async ({ page }) => {
+  await boot(page);
+  await pickDevice(page);
+  await page.getByTestId('menu').click();
+  await page.getByTestId('demo-scale-lens').click();
+  const p1 = page.locator('[data-testid=strip-P1]');
+  // D Dorian (D E F G A B C): D#4, F#4, G#4 and C#5 move, each a tie that goes up; the stored values are shown.
+  await expect(p1.locator('.cell.xf')).toHaveCount(4);
+  await expect(p1.locator('.cell.xf .txt')).toHaveText(['D#4', 'F#4', 'G#4', 'C#5']);
+  await expect(p1.locator('.cell.xf [data-testid=xf-delta]')).toHaveText(['+1', '+1', '+1', '+1']);
+  // Changing the root updates the marks at once: C Dorian has D#.
+  await page.getByTestId('scale-root').selectOption('0');
+  await expect(p1.locator('.cell.xf .txt')).toHaveText(['F#4', 'G#4', 'C#5']);
+  // A different direction: DOWN moves the same notes the other way.
+  await page.getByTestId('scale-dir-down').click();
+  await expect(p1.locator('.cell.xf [data-testid=xf-delta]')).toHaveText(['−1', '−1', '−1']);
+  await page.getByTestId('scale-dir-nearest').click();
+  // OFF: no marks, nothing constrained.
+  await page.getByTestId('scale-on').click();
+  await expect(p1.locator('.cell.xf')).toHaveCount(0);
+  await page.getByTestId('scale-on').click();
+  await page.getByTestId('scale-root').selectOption('2');
+  // The lens can show one line: line 3 ignores Scale Mode.
+  await page.getByTestId('lens-2').click();
+  await expect(page.locator('.cell.xf')).toHaveCount(0);
+  await page.getByTestId('lens-global').click();
+
+  await page.getByTestId('start').click();
+  // Line 1 eventually plays a transformed note and shows source -> output.
+  await expect(page.getByTestId('result-0').getByTestId('scale-delta')).toBeVisible({ timeout: 5000 });
+  await expect(page.getByTestId('result-0').getByTestId('pre-pitch')).toBeVisible();
+  await page.waitForTimeout(1500);
+  await page.getByTestId('stop').click();
+  const dorian = new Set([2, 4, 5, 7, 9, 11, 0]);
+  const ch1 = (await sent(page)).filter((m) => isOn(m) && chan(m) === 1).map((m) => m.bytes[1]! % 12);
+  expect(ch1.length).toBeGreaterThan(4);
+  expect(ch1.every((pc) => dorian.has(pc))).toBe(true);
+  // Line 3 is OFF: its stored G#5 / F5 come through unchanged.
+  const ch3 = (await sent(page)).filter((m) => isOn(m) && chan(m) === 3).map((m) => m.bytes[1]);
+  expect(ch3).toContain(80);
+  expect(paired(await sent(page))).toEqual([]);
+  // The stored series were never rewritten.
+  const p1vals = await page.evaluate(() => (window as unknown as { feelers: { column(id: string): { els: { v: number }[] } } }).feelers.column('P1').els.map((e) => e.v));
+  expect(p1vals).toEqual([62, 63, 65, 66, 67, 68, 69, 72, 73]);
+});
+
+test('Restore Last Start brings back values changed by ? and undoes on a second press', async ({ page }) => {
+  await boot(page);
+  await page.getByTestId('menu').click();
+  await page.getByTestId('demo-drift').click();
+  await expect(page.getByTestId('restore')).toBeDisabled();
+  const p1 = () => page.evaluate(() => (window as unknown as { feelers: { column(id: string): { els: { v: number }[] } } }).feelers.column('P1').els.map((e) => e.v));
+  const start = await p1();
+  await page.getByTestId('start').click();
+  await expect.poll(async () => JSON.stringify(await p1()), { timeout: 8000 }).not.toBe(JSON.stringify(start));
+  await page.getByTestId('pause').click();
+  const drifted = await p1();
+  await page.getByTestId('restore').click();
+  expect(await p1()).toEqual(start);
+  await expect(page.getByTestId('restore')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('restore').click();
+  expect(await p1()).toEqual(drifted);
+  await page.getByTestId('stop').click();
+});
+
+test('palettes recolour the whole instrument, persist apart from the project', async ({ page }) => {
+  await boot(page);
+  const paper = () => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--paper').trim());
+  expect(await paper()).toBe('#f8f5ec');
+  await page.getByTestId('menu').click();
+  await page.getByTestId('palette-dark').click();
+  await expect(page.locator('html')).toHaveAttribute('data-palette', 'dark');
+  expect(await paper()).toBe('#17191c');
+  const panelBg = await page.evaluate(() => getComputedStyle(document.querySelector('.line')!).backgroundColor);
+  expect(panelBg).toBe('rgb(23, 25, 28)');
+  // Not part of the project file.
+  const json = await page.evaluate(() => (window as unknown as { feelers: { exportJson(): string } }).feelers.exportJson());
+  expect(json).not.toContain('17191c');
+  // Editing a built-in makes a copy.
+  await page.getByTestId('pal-hex-transform').fill('#ff00ff');
+  await page.getByTestId('pal-hex-transform').press('Enter');
+  await expect(page.locator('html')).toHaveAttribute('data-palette', 'custom');
+  expect(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--xform').trim())).toBe('#ff00ff');
+  // Kept in this browser under feelers.palette.* (this harness clears storage on reload, so read it directly).
+  const stored = await page.evaluate(() => [localStorage.getItem('feelers.palette.selected'), localStorage.getItem('feelers.palette.custom')]);
+  expect(stored[0]).toMatch(/^custom-/);
+  expect(stored[1]).toContain('#ff00ff');
+});
+
+test('a version 1 project file is converted on import, and says so', async ({ page }) => {
+  await boot(page);
+  const { readFileSync } = await import('node:fs');
+  const golden = JSON.parse(readFileSync('tests/fixtures/v1-golden.json', 'utf8'));
+  await page.getByTestId('menu').click();
+  await page.getByTestId('import-file').setInputFiles({ name: 'old.feelers.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(golden.controls.file)) });
+  await expect(page.locator('.title')).toHaveValue('v1 controls');
+  await expect(page.getByTestId('status')).toContainText('older Feelers format');
+  await expect(page.locator('[data-testid=strip-P2] .cell.loop')).toHaveText(/L×2/);
 });

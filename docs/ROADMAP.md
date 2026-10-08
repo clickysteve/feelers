@@ -1,38 +1,45 @@
 # Roadmap
 
-What the first version does not do yet, roughly in order of usefulness.
+What Feelers does not do yet, roughly in order of usefulness. The historical
+items follow the batches in [HISTORICAL_AUDIT.md](HISTORICAL_AUDIT.md),
+section 8; batch 1 (the historical score model) is done.
 
 ## Verification
 
-1. **Re-verify the research against full texts** (MT88 above all) and, if a
-   legitimate copy can be obtained, observe Fingers in an emulator. The
-   checklist is at the end of [RESEARCH.md](RESEARCH.md). Correct BEHAVIOUR
-   and PROVENANCE where the evidence changes.
+1. **Settle the open historical choices** ([UNCERTAINTIES.md](UNCERTAINTIES.md))
+   by running Fingers or the Fingers part of MIDI-AX in an Atari ST emulator
+   with small test scores and logging the MIDI output. Each answer changes a
+   default in `src/engine/choices.ts` or a documented rule.
 2. **Physical hardware testing.** Only a simulated Web MIDI device has been
    tested. Check with a USB MIDI interface and a Squarp Hermod+: clock
-   following, Start / Stop / Continue handling, gate lengths in strict and
-   legato modes, behaviour on unplugging.
+   following, Start / Stop / Continue, gate lengths in AS WRITTEN, LEGATO and
+   MONO, overlapping notes on polyphonic and monophonic synths, Scale Mode
+   output, behaviour on unplugging.
 
-## Next development pass (recommended)
+## Batch 2: performance controls (historical)
 
-3. **External clock in.** Done: SYNC INT / EXT follows 24 PPQN MIDI Clock
-   with Start / Stop / Continue (see ARCHITECTURE, "External clock").
-   Still to verify on real hardware (Squarp Hermod+).
-4. **MIDI CC control of performance parameters** with MIDI learn: transpose,
-   time adjust, velocity offset, direction, pause and mute per line, tempo,
-   memory recall. Every target is an existing `App` action.
-5. **Undo / redo** for series edits.
+3. Fixed values per line parameter (FM ch. 4).
+4. Advance buttons (silent per-head step, all heads, with Time) and the
+   series-jump arm (FM ch. 4).
+5. Save Starting Points per line and Reset Starts (FM ch. 4-5).
+6. P for all lines; Re for the Time head only; PA released plays at once
+   (with the current behaviour kept as an option).
+7. Keypad and arrow-key transposition with per-line enables; `[` / `]` to
+   double and halve Time Adjust; Tm shown as an integer over 16.
+8. Undo (single level, as documented) and Shadows.
+9. S/L Time Limit per line.
 
-## Later
+## Batch 3: editing and files
 
-6. **MIDI-AX Performance Mode** (see [MIDI-AX.md](MIDI-AX.md)): gesture pad,
-   holds as a fifth line, cross-control matrix.
-7. **Line relationships**: conductor lines (one line's notes advance
-   another's heads), shared clocks, probabilistic traversal (a head moves
-   forward, back or stays by probability), conditional elements.
-8. **More series control elements** if the remaining historical ones are
-   identified.
-9. **Scale-aware editing** of pitch series (entering degrees of a scale) as an
-   optional convenience, keeping MIDI notes as the stored values.
-10. **Original-format import**, only if the formats can be documented
-    independently.
+10. Ran (one-shot randomise), Copy, Swap, Adj; Rec / Rep from a MIDI keyboard.
+11. Program change table.
+12. Configurable column types and 13 / 16 column modes (default 4 / 4 / 4 / 1).
+13. Optional `.FIN` import for user-supplied files.
+
+## Modern facilities and extensions
+
+14. **MIDI CC control** of performance parameters with MIDI learn.
+15. **Scale-aware editing** of pitch columns (entering scale degrees), keeping
+    MIDI notes as the stored values.
+16. **MIDI-AX-inspired Performance Mode** ([MIDI-AX.md](MIDI-AX.md)): gesture
+    pad, holds, cross-control matrix, line linking.

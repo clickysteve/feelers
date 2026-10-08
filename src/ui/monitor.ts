@@ -8,7 +8,12 @@ import type { NoteEvent } from '../engine/engine';
 import { noteName } from '../engine/factory';
 import { h, replace } from './dom';
 
-const COLORS = ['#ff7a45', '#4da3ff', '#4cd07d', '#d27ae6'];
+/** Palette colours for the canvas (CSS custom properties, read each frame so palette changes apply at once). */
+function colours(): { paper: string; ink: string; dim: string; lines: string[] } {
+  const cs = getComputedStyle(document.documentElement);
+  const v = (n: string, d: string) => cs.getPropertyValue(n).trim() || d;
+  return { paper: v('--paper', '#f8f5ec'), ink: v('--ink', '#15140f'), dim: v('--dim', '#6d695d'), lines: ['--l1', '--l2', '--l3', '--l4'].map((n) => v(n, '#15140f')) };
+}
 const WINDOW_MS = 9000;
 
 interface Trace {
@@ -65,13 +70,15 @@ export class MonitorView {
     const g = c.getContext('2d');
     if (!g) return;
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.fillStyle = '#10141a';
+    const pal = colours();
+    g.fillStyle = pal.paper;
     g.fillRect(0, 0, w, hgt);
     // octave guides
-    g.strokeStyle = 'rgba(255,255,255,0.06)';
+    g.strokeStyle = pal.dim;
+    g.globalAlpha = 0.25;
     g.lineWidth = 1;
     g.font = '9px ui-monospace, Menlo, monospace';
-    g.fillStyle = 'rgba(255,255,255,0.25)';
+    g.fillStyle = pal.dim;
     const lo = 24;
     const hi = 100;
     const y = (p: number) => hgt - 6 - ((Math.min(hi, Math.max(lo, p)) - lo) / (hi - lo)) * (hgt - 12);
@@ -82,13 +89,14 @@ export class MonitorView {
       g.stroke();
       g.fillText(noteName(p), 3, y(p) - 2);
     }
+    g.globalAlpha = 1;
     const x = (t: number) => w - 24 - ((now - t) / WINDOW_MS) * (w - 40);
     this.traces = this.traces.filter((t) => now - t.off < WINDOW_MS);
     // tendrils: connect successive notes of each line
     for (let line = 0; line < 4; line++) {
       const ts = this.traces.filter((t) => t.line === line && t.on <= now);
       if (!ts.length) continue;
-      const col = COLORS[line]!;
+      const col = pal.lines[line]!;
       g.strokeStyle = col;
       g.globalAlpha = 0.35;
       g.lineWidth = 1;

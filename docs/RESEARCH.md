@@ -6,7 +6,28 @@ behavioural model is in [BEHAVIOUR.md](BEHAVIOUR.md); open questions are in
 [UNCERTAINTIES.md](UNCERTAINTIES.md); how Feelers uses all of this is in
 [PROVENANCE.md](PROVENANCE.md).
 
-## How this research was done (read this first)
+## Status (October 2026): partly superseded
+
+This document records the **first** research pass, made from search
+excerpts only. The full Fingers manual and other complete sources were later
+examined in the historical audit ([HISTORICAL_AUDIT.md](HISTORICAL_AUDIT.md)),
+which supersedes this file wherever they differ. The main corrections:
+
+- A Time value is the wait *before* its note; a note's length uses the *next*
+  Time value; S/L is in sixteenths.
+- Series control elements are marks on elements; Skip skips its own element;
+  Rest and rest differ in which heads advance; End splits a column into
+  usable series; Column Link is a column flag; Loops run from the series start
+  or the previous Loop and are ignored backwards.
+- The two auto-randomise marks differ only in their probabilities and both
+  keep their changes; limits apply only to randomised values (Minimum Time,
+  relative Pitch Limit).
+- **Fingers did not follow an external clock**; "synchronise with external
+  sequencers" referred to sending MIDI clock (FM ch. 7).
+
+The text below is kept as the record of what was known at the time.
+
+## How this research was done (first pass)
 
 The first research pass was carried out from a cloud build container whose
 network policy blocked direct access to the key archive hosts
@@ -251,17 +272,19 @@ version of Feelers implements all of it:
 
 ## Re-verification checklist
 
-When the full texts can be read (or the software run in an emulator), check:
+Checked against the full manual in the historical audit (October 2026):
 
-- [ ] MT88: the complete list of the eight series control elements and their
-      letters; whether REST is one of them.
-- [ ] MT88: exact behaviour of P and Re; whether Re resets one line or all.
-- [ ] MT88: what the two probability columns and the two auto-randomise
-      symbols do.
-- [ ] MT88: units and ranges of Tim and S/L values; number and length of
-      series.
-- [ ] MT88: whether "synchronise" means slave to incoming clock.
-- [ ] MT88: what "last nine performances" stores.
-- [ ] TAMW / MIDI-AX docs: meaning of "time division" and "linking to other
-      lines".
-- [ ] Whether any of the above changed between Fingers versions.
+- [x] The eight series control elements (End of Series, Column Link, Loop,
+      Skip, Rest, rest, two auto-randomise marks); Rest is one of them.
+- [x] P plays the next note at once (right click: all lines); Re restarts the
+      line (left click: Time icon only; right click: all icons).
+- [x] The two probability settings belong to the two auto-randomise marks.
+- [x] Units: Time in 24 steps per beat, 1-999; S/L in sixteenths of the next
+      Time value; columns of 16 elements, 13 or 16 columns.
+- [x] "Synchronise" means sending MIDI clock; Fingers had no clock input.
+- [x] Fingers records continuously and keeps nine sequences.
+- [x] MIDI-AX "linking to other lines" is line linking (L objects), a MIDI-AX
+      addition; "time division" is most likely Tm (INFERRED).
+- [ ] Whether any of the above changed between Fingers versions (the manual
+      is undated beyond 1988).
+- [ ] Behaviour the manual leaves open: see [UNCERTAINTIES.md](UNCERTAINTIES.md).

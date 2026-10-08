@@ -7,21 +7,22 @@ import { AudioPreview } from './audio/preview';
 import { demo } from './demos/demos';
 import { Engine, cloneProject, recallSnapshot, takeSnapshot, type NoteEvent } from './engine/engine';
 import { fullBank, makeLine, makeProject } from './engine/factory';
-import { activeLength, matchBracket } from './engine/series';
-import type { Cell, Direction, Kind, Project } from './engine/types';
-import { KINDS, KIND_RANGE, MAX_CELLS } from './engine/types';
+import { effectiveScale } from './engine/scale';
+import { peekHead, seriesPositions, type Score } from './engine/series';
+import type { AutoRand, Column, ColumnRandom, Direction, El, GlobalScale, Kind, LineScale, Overlap, Pos, Project, RandomSettings, RestMark, ScaleSpec } from './engine/types';
+import { KINDS, KIND_RANGE, MAX_ELS, MAX_LOOP } from './engine/types';
 import { describe } from './midi/messages';
 import { MidiOutput } from './midi/output';
 import { MidiAccess, type PortInfo } from './midi/webmidi';
-import { deserialize, serialize } from './persistence/project';
+import { load, serialize } from './persistence/project';
 import { loadCurrent, saveCurrent, saveToLibrary } from './persistence/storage';
 import { TakeRecorder } from './persistence/takes';
 import { Scheduler, WorkerTicker, type ClockSource, type TransportState } from './scheduler/scheduler';
 
-export type Topic = 'project' | 'bank' | 'lines' | 'transport' | 'midi' | 'selection' | 'takes' | 'snapshots' | 'status' | 'heads';
+export type Topic = 'project' | 'bank' | 'lines' | 'transport' | 'midi' | 'selection' | 'takes' | 'snapshots' | 'status' | 'heads' | 'scale';
 
 export interface Selection {
-  series: string;
+  col: string;
   index: number;
 }
 
@@ -30,10 +31,8 @@ export interface MonitorEntry {
   text: string;
 }
 
-export interface DisplayHead {
-  series: string;
-  index: number | null;
-}
+/** Which scale the Pitch columns preview: the global scale, or one line's. */
+export type ScaleLens = 'global' | 0 | 1 | 2 | 3;
 
 export class App {
   engine: Engine;
@@ -49,7 +48,9 @@ export class App {
   selection: Selection | null = null;
   storeMode = false;
   /** Visual state: what each head last sounded (updated at sounding time). */
-  display: Record<Kind, DisplayHead | null>[] = [];
+  display: Record<Kind, Pos | null>[] = [];
+  /** The scale the Pitch columns preview. */
+  lens: ScaleLens = 'global';
   lastNotes: (NoteEvent | null)[] = [null, null, null, null];
   /** Live shifts applied to each line since Start, in ticks (for display). */
   shifts = [0, 0, 0, 0];
@@ -123,6 +124,7 @@ export class App {
     this.engine.on((c) => {
       if (c.type === 'cell') this.emitSoon('bank');
       else if (c.type === 'line') this.emitSoon('lines');
+      else if (c.type === 'restore') this.emitSoon('project');
     });
     this.resetDisplay();
   }
@@ -183,7 +185,10 @@ export class App {
         due.push(v.ev);
         this.lastNotes[v.ev.line] = v.ev;
         const d = this.display[v.ev.line]!;
-        for (const k of KINDS) d[k] = { series: v.ev.reads[k].series, index: v.ev.reads[k].index };
+        for (const k of KINDS) {
+          const r = v.ev.reads[k];
+          if (!r.held) d[k] = r.pos;
+        }
         for (const fn of this.noteListeners) fn(v.ev, v.offMs);
       } else keep.push(v);
     }
@@ -194,26 +199,43 @@ export class App {
 
   /** Show heads at their start cells (or current runtime positions). */
   resetDisplay(): void {
-    this.display = this.engine.lines.map((rt) => {
-      const d = {} as Record<Kind, DisplayHead | null>;
+    this.display = this.engine.lines.map(() => {
+      const d = {} as Record<Kind, Pos | null>;
       for (const k of KINDS) d[k] = null;
-      void rt;
       return d;
     });
     this.lastNotes = [null, null, null, null];
     this.emit('heads');
   }
 
-  /** Where to draw a head: last sounded cell, else the next cell it will read. */
-  headView(line: number, kind: Kind): { series: string; index: number; live: boolean } {
+  /** Where to draw a head: the element last sounded, else the one it will read next. */
+  headView(line: number, kind: Kind): { col: string; index: number; live: boolean } {
     const d = this.display[line]?.[kind];
+    if (d && this.transport !== 'stopped' && this.engine.column(d.col)) return { col: d.col, index: d.i, live: true };
     const h = this.engine.lines[line]!.heads[kind];
-    if (d && d.index !== null && d.series === h.series && this.transport !== 'stopped') return { series: d.series, index: d.index, live: true };
-    const s = this.engine.series(h.series);
-    const act = s ? activeLength(s) : 0;
-    let idx = h.pos;
-    if (idx >= act || idx < 0) idx = h.dir === 1 ? 0 : Math.max(0, act - 1);
-    return { series: h.series, index: idx, live: false };
+    const next = peekHead(h, { score: this.engine.score, choices: this.engine.choices }).pos ?? h.pos;
+    return { col: next.col, index: next.i, live: false };
+  }
+
+  /** Position of an element within its series, for display ("3/8"). */
+  seriesPlace(p: Pos, sc: Score = this.engine.score): { at: number; of: number } {
+    const all = seriesPositions(sc, p).filter((q) => sc.el(q)?.loop === undefined);
+    const at = all.findIndex((q) => q.col === p.col && q.i === p.i);
+    return { at: at + 1, of: all.length };
+  }
+
+  /** The scale a line plays in (or null). */
+  lineScale(line: number): ScaleSpec | null {
+    return effectiveScale(this.project.scale, this.engine.cfg(line));
+  }
+
+  /** The scale the Pitch columns preview, with the transposition it applies after (lens on a line). */
+  lensScale(): { spec: ScaleSpec | null; transpose: number } {
+    if (this.lens === 'global') {
+      const g = this.project.scale;
+      return { spec: g.on ? { root: g.root, scale: g.scale, dir: g.dir } : null, transpose: 0 };
+    }
+    return { spec: this.lineScale(this.lens), transpose: this.engine.cfg(this.lens).transpose };
   }
 
   // -------------------------------------------------------------------
@@ -243,6 +265,26 @@ export class App {
     if (this.followsClock()) return;
     this.sched.setTempo(this.project.tempo);
     this.sched.start();
+    this.emit('snapshots');
+  }
+
+  /**
+   * Restore Last Start: every series value and line setting returns to how
+   * it was when Start was last pressed (undoing edits and auto-randomisation).
+   * Pressing again undoes the restore.
+   */
+  restoreLastStart(): void {
+    const r = this.engine.toggleRestore();
+    if (!r) {
+      this.setStatus('Nothing to restore yet: RESTORE returns to the state at the last Start.');
+      return;
+    }
+    this.sched.setTempo(this.project.tempo);
+    for (let l = 0; l < 4; l++) if (this.engine.cfg(l).mute) this.sched.releaseLine(l);
+    this.selection = null;
+    this.emit('project');
+    this.emit('snapshots');
+    this.setStatus(r === 'restored' ? 'Restored every value and line setting to the last Start. Press RESTORE again to undo.' : 'Undid the restore: back to the values before it.');
   }
   pause(): void {
     if (this.followsClock()) return;
@@ -361,7 +403,7 @@ export class App {
   newProject(): void {
     const p = makeProject({
       name: 'New feelers',
-      series: fullBank([]),
+      columns: fullBank([]),
       lines: [0, 1, 2, 3].map((i) => makeLine(i, {}, { mute: i > 0 })),
     });
     this.loadProject(p);
@@ -372,7 +414,9 @@ export class App {
   }
 
   importJson(text: string): void {
-    this.loadProject(deserialize(text));
+    const r = load(text);
+    this.loadProject(r.project);
+    if (r.from < 2) this.setStatus(`Converted "${r.project.name}" from an older Feelers format: ${r.migration.length} note(s) added to the project notes.`);
   }
 
   saveToBrowser(): void {
@@ -439,6 +483,7 @@ export class App {
     if (this.transport === 'stopped') {
       const cfg = this.engine.cfg(line);
       cfg.delay = Math.max(0, cfg.delay + delta);
+      this.engine.resetLine(line, 0);
       this.engine.lines[line]!.nextTick = cfg.delay;
       this.emit('lines');
     } else {
@@ -459,17 +504,17 @@ export class App {
     for (const k of KINDS) this.toggleDir(line, k);
   }
 
-  assign(line: number, kind: Kind, series: string): void {
-    this.engine.setHeadSeries(line, kind, series);
+  assign(line: number, kind: Kind, col: string): void {
+    this.engine.setHeadColumn(line, kind, col);
     this.engine.cfg(line).heads[kind].start = 0;
     this.emit('lines');
     this.emit('heads');
   }
 
-  /** Move a head to a cell; while stopped this sets its starting cell. */
-  placeHead(line: number, kind: Kind, series: string, index: number): void {
+  /** Move a head to an element; while stopped this sets its starting element. */
+  placeHead(line: number, kind: Kind, col: string, index: number): void {
     const cfg = this.engine.cfg(line);
-    if (cfg.heads[kind].series !== series) this.engine.setHeadSeries(line, kind, series, index);
+    if (cfg.heads[kind].col !== col) this.engine.setHeadColumn(line, kind, col, index);
     else this.engine.setHeadPos(line, kind, index);
     if (this.transport === 'stopped') cfg.heads[kind].start = index;
     this.display[line]![kind] = null;
@@ -487,6 +532,37 @@ export class App {
     this.engine.cfg(line).program = prog;
     if (prog !== null) this.sched.sendProgram(line);
     this.emit('lines');
+  }
+
+  setOverlap(line: number, mode: Overlap): void {
+    const cfg = this.engine.cfg(line);
+    if (cfg.overlap === mode) return;
+    cfg.overlap = mode;
+    this.emit('lines');
+  }
+
+  // -------------------------------------------------------------------
+  // Scale Mode (modern facility; never rewrites the stored series)
+
+  setGlobalScale(patch: Partial<GlobalScale>): void {
+    Object.assign(this.project.scale, patch);
+    this.scaleChanged();
+  }
+
+  setLineScale(line: number, patch: Partial<LineScale>): void {
+    Object.assign(this.engine.cfg(line).scale, patch);
+    this.scaleChanged();
+  }
+
+  setLens(lens: ScaleLens): void {
+    this.lens = lens;
+    this.emit('scale');
+  }
+
+  private scaleChanged(): void {
+    this.emit('scale');
+    this.emit('lines');
+    this.scheduleSave();
   }
 
   // -------------------------------------------------------------------
@@ -514,162 +590,224 @@ export class App {
   }
 
   // -------------------------------------------------------------------
-  // Series editing
+  // Score editing
 
   select(sel: Selection | null): void {
     this.selection = sel;
     this.emit('selection');
   }
 
-  cellAt(sel: Selection | null = this.selection): Cell | undefined {
+  column(id: string): Column | undefined {
+    return this.engine.column(id);
+  }
+
+  elAt(sel: Selection | null = this.selection): El | undefined {
     if (!sel) return undefined;
-    return this.engine.series(sel.series)?.cells[sel.index];
+    return this.column(sel.col)?.els[sel.index];
   }
 
-  setValue(series: string, index: number, v: number): void {
-    const s = this.engine.series(series);
-    if (!s) return;
-    const r = KIND_RANGE[s.kind];
-    this.engine.setValue(series, index, Math.min(r.max, Math.max(r.min, Math.round(v))), this.project.options.shiftEdit);
+  private edited(): void {
     this.emit('bank');
   }
 
-  /** Replace the selected cell with a different element type. */
-  setCellType(type: Cell['t'], n = 2): void {
-    const sel = this.selection;
-    const s = sel && this.engine.series(sel.series);
-    if (!sel || !s) return;
-    const old = s.cells[sel.index];
-    let cell: Cell;
-    switch (type) {
-      case 'v':
-        cell = { t: 'v', v: old?.t === 'v' ? old.v : defaultValue(s.kind) };
-        break;
-      case 'close':
-        cell = { t: 'close', n };
-        break;
-      default:
-        cell = { t: type } as Cell;
+  setValue(col: string, index: number, v: number): void {
+    const c = this.column(col);
+    const e = c?.els[index];
+    if (!c || !e || e.loop !== undefined) return;
+    const r = KIND_RANGE[c.kind];
+    this.engine.setValue({ col, i: index }, Math.min(r.max, Math.max(r.min, Math.round(v))), this.project.options.shiftEdit);
+    this.edited();
+  }
+
+  /** Turn the selected slot into a value (keeping its marks), a blank, or a Loop. */
+  setSlot(kind: 'value' | 'blank' | 'loop', count = 0): void {
+    const e = this.elAt();
+    const c = this.selection && this.column(this.selection.col);
+    if (!e || !c) return;
+    if (kind === 'loop') {
+      if (e.loop === undefined) e.loop = count;
+      e.v = null;
+      delete e.rest;
+      delete e.ar;
+    } else {
+      delete e.loop;
+      e.v = kind === 'blank' ? null : (e.v ?? this.neighbourValue(c, this.selection!.index));
     }
-    s.cells[sel.index] = cell;
-    this.emit('bank');
+    this.edited();
   }
 
-  setRandFlag(r: 0 | 1 | 2): void {
-    const c = this.cellAt();
-    if (!c || c.t !== 'v') return;
-    if (r) c.r = r;
-    else delete c.r;
-    this.emit('bank');
+  private neighbourValue(c: Column, i: number): number {
+    for (let d = 1; d < c.els.length; d++) {
+      for (const j of [i - d, i + d]) {
+        const v = c.els[j]?.v;
+        if (v !== null && v !== undefined) return v;
+      }
+    }
+    return defaultValue(c.kind);
+  }
+
+  toggleSkip(): void {
+    const e = this.elAt();
+    if (!e) return;
+    if (e.skip) delete e.skip;
+    else e.skip = true;
+    this.edited();
+  }
+
+  toggleEnd(): void {
+    const e = this.elAt();
+    if (!e) return;
+    if (e.end) delete e.end;
+    else e.end = true;
+    this.edited();
+  }
+
+  /** Set a rest mark, or cycle none -> Rest -> rest -> none (as the Fingers Rest option does). */
+  setRest(mark?: RestMark | null): void {
+    const e = this.elAt();
+    if (!e || e.loop !== undefined) return;
+    const next: RestMark | null = mark !== undefined ? mark : e.rest === undefined ? 'R' : e.rest === 'R' ? 'r' : null;
+    if (next) e.rest = next;
+    else delete e.rest;
+    this.edited();
+  }
+
+  setAutoRand(ar: AutoRand | 0): void {
+    const e = this.elAt();
+    if (!e || e.loop !== undefined) return;
+    if (ar) e.ar = ar;
+    else delete e.ar;
+    this.edited();
   }
 
   setLoopCount(n: number): void {
-    const c = this.cellAt();
-    if (!c || c.t !== 'close') return;
-    c.n = Math.min(999, Math.max(1, Math.round(n)));
-    this.emit('bank');
+    const e = this.elAt();
+    if (!e || e.loop === undefined) return;
+    e.loop = Math.min(MAX_LOOP, Math.max(0, Math.round(n)));
+    this.edited();
   }
 
-  insertCell(after: boolean): void {
+  toggleLink(col: string): void {
+    const c = this.column(col);
+    if (!c) return;
+    c.link = !c.link;
+    this.edited();
+  }
+
+  insertEl(after: boolean): void {
     const sel = this.selection;
-    const s = sel && this.engine.series(sel.series);
-    if (!sel || !s || s.cells.length >= MAX_CELLS) return;
-    const src = s.cells[sel.index];
-    const cell: Cell = src && src.t === 'v' ? { t: 'v', v: src.v } : { t: 'v', v: defaultValue(s.kind) };
+    const c = sel && this.column(sel.col);
+    if (!sel || !c) return;
+    if (c.els.length >= MAX_ELS) {
+      this.setStatus(`A column holds ${MAX_ELS} elements. Delete one first, or continue in another column with Column Link.`);
+      return;
+    }
+    const src = c.els[sel.index];
     const at = after ? sel.index + 1 : sel.index;
-    s.cells.splice(at, 0, cell);
-    this.shiftHeads(s.id, at, 1);
-    this.selection = { series: s.id, index: at };
-    this.emit('bank');
+    c.els.splice(at, 0, { v: src?.v ?? this.neighbourValue(c, sel.index) });
+    this.shiftHeads(c.id, at, 1);
+    this.selection = { col: c.id, index: at };
+    this.edited();
     this.emit('selection');
   }
 
-  appendCell(seriesId: string): void {
-    const s = this.engine.series(seriesId);
-    if (!s || s.cells.length >= MAX_CELLS) return;
-    const lastV = [...s.cells].reverse().find((c) => c.t === 'v');
-    s.cells.push({ t: 'v', v: lastV && lastV.t === 'v' ? lastV.v : defaultValue(s.kind) });
-    this.selection = { series: s.id, index: s.cells.length - 1 };
-    this.emit('bank');
+  appendEl(colId: string): void {
+    const c = this.column(colId);
+    if (!c || c.els.length >= MAX_ELS) return;
+    c.els.push({ v: this.neighbourValue(c, c.els.length) });
+    this.selection = { col: c.id, index: c.els.length - 1 };
+    this.edited();
     this.emit('selection');
   }
 
-  deleteCell(): void {
+  deleteEl(): void {
     const sel = this.selection;
-    const s = sel && this.engine.series(sel.series);
-    if (!sel || !s || s.cells.length <= 1) return;
-    s.cells.splice(sel.index, 1);
-    this.shiftHeads(s.id, sel.index + 1, -1);
-    this.selection = { series: s.id, index: Math.min(sel.index, s.cells.length - 1) };
-    this.emit('bank');
+    const c = sel && this.column(sel.col);
+    if (!sel || !c || c.els.length <= 1) return;
+    c.els.splice(sel.index, 1);
+    this.shiftHeads(c.id, sel.index + 1, -1);
+    this.selection = { col: c.id, index: Math.min(sel.index, c.els.length - 1) };
+    this.edited();
     this.emit('selection');
   }
 
-  /** Keep heads pointing at the same cells after an insert / delete. */
-  private shiftHeads(series: string, from: number, d: number): void {
+  /** Keep heads pointing at the same elements after an insert / delete. */
+  private shiftHeads(col: string, from: number, d: number): void {
+    const move = (p: Pos | null) => {
+      if (p && p.col === col && p.i >= from) p.i = Math.max(0, p.i + d);
+    };
     for (let l = 0; l < this.engine.lines.length; l++) {
+      const rt = this.engine.lines[l]!;
       for (const k of KINDS) {
-        const h = this.engine.lines[l]!.heads[k];
-        if (h.series !== series) continue;
-        if (h.pos >= from) h.pos = Math.max(0, h.pos + d);
-        if (h.lastIndex !== null && h.lastIndex >= from) h.lastIndex = Math.max(0, h.lastIndex + d);
-        const disp = this.display[l]![k];
-        if (disp && disp.series === series && disp.index !== null && disp.index >= from) disp.index = Math.max(0, disp.index + d);
+        const h = rt.heads[k];
+        move(h.pos);
+        move(h.last);
+        move(this.display[l]![k]);
         const cfg = this.engine.cfg(l).heads[k];
-        if (cfg.series === series && cfg.start >= from) cfg.start = Math.max(0, cfg.start + d);
+        if (cfg.col === col && cfg.start >= from) cfg.start = Math.max(0, cfg.start + d);
+        h.loops = {};
       }
+      move(rt.pending?.pos ?? null);
     }
   }
 
-  /** Rotate the active part of a series by one step. */
-  rotate(seriesId: string, d: 1 | -1): void {
-    const s = this.engine.series(seriesId);
-    if (!s) return;
-    const act = activeLength(s);
-    const part = s.cells.slice(0, act);
-    if (part.length < 2) return;
-    if (d === 1) part.unshift(part.pop()!);
-    else part.push(part.shift()!);
-    s.cells.splice(0, act, ...part);
-    this.emit('bank');
+  /**
+   * Rotate the values of a column by one step (Feelers tool). Values move
+   * with their Skip, rest and randomise marks; Loop elements and End flags
+   * stay where they are, so the structure is kept.
+   */
+  rotate(colId: string, d: 1 | -1): void {
+    const c = this.column(colId);
+    if (!c) return;
+    const slots = c.els.map((e, i) => (e.loop === undefined ? i : -1)).filter((i) => i >= 0);
+    if (slots.length < 2) return;
+    const items = slots.map((i) => strip(c.els[i]!));
+    if (d === 1) items.unshift(items.pop()!);
+    else items.push(items.shift()!);
+    slots.forEach((i, k) => (c.els[i] = { ...items[k]!, ...(c.els[i]!.end ? { end: true as const } : {}) }));
+    this.edited();
+  }
+
+  /** Reverse the order of the values of a column (Loop elements and End flags stay put). */
+  retrograde(colId: string): void {
+    const c = this.column(colId);
+    if (!c) return;
+    const slots = c.els.map((e, i) => (e.loop === undefined ? i : -1)).filter((i) => i >= 0);
+    const items = slots.map((i) => strip(c.els[i]!)).reverse();
+    slots.forEach((i, k) => (c.els[i] = { ...items[k]!, ...(c.els[i]!.end ? { end: true as const } : {}) }));
+    this.edited();
   }
 
   /** Add to every value (pitch transposition of material, not of the line). */
-  offsetSeries(seriesId: string, d: number): void {
-    const s = this.engine.series(seriesId);
-    if (!s) return;
-    const r = KIND_RANGE[s.kind];
-    for (const c of s.cells) if (c.t === 'v') c.v = Math.min(r.max, Math.max(r.min, c.v + d));
-    this.emit('bank');
+  offsetColumn(colId: string, d: number): void {
+    const c = this.column(colId);
+    if (!c) return;
+    const r = KIND_RANGE[c.kind];
+    for (const e of c.els) if (e.v !== null) e.v = Math.min(r.max, Math.max(r.min, e.v + d));
+    this.edited();
   }
 
-  /** Reverse the order of the active part (retrograde of the material). */
-  retrograde(seriesId: string): void {
-    const s = this.engine.series(seriesId);
-    if (!s) return;
-    const act = activeLength(s);
-    // Brackets swap roles; each new close bracket takes its partner's count.
-    const part = s.cells.slice(0, act).map((c, i): Cell => {
-      if (c.t === 'close') return { t: 'open' };
-      if (c.t === 'open') {
-        const partner = s.cells[matchBracket(s.cells, i, act)];
-        return { t: 'close', n: partner && partner.t === 'close' ? partner.n : 2 };
-      }
-      return c;
-    });
-    s.cells.splice(0, act, ...part.reverse());
-    this.emit('bank');
+  setKindRandom(kind: Kind, patch: Partial<RandomSettings>): void {
+    Object.assign(this.project.random[kind], patch);
+    this.edited();
   }
 
-  setSeriesRand(seriesId: string, patch: Partial<{ amount: number; type: number; prob: number; lo: number; hi: number }>): void {
-    const s = this.engine.series(seriesId);
-    if (!s) return;
-    if (patch.amount !== undefined) s.rand.amount = patch.amount;
-    if (patch.type !== undefined) s.rand.type = patch.type;
-    if (patch.prob !== undefined) s.rand.prob = patch.prob;
-    if (patch.lo !== undefined) s.lo = Math.min(patch.lo, s.hi);
-    if (patch.hi !== undefined) s.hi = Math.max(patch.hi, s.lo);
-    this.emit('bank');
+  /** Give a column its own randomisation (Feelers extension), or null to follow its kind. */
+  setColumnRandom(colId: string, patch: Partial<ColumnRandom> | null): void {
+    const c = this.column(colId);
+    if (!c) return;
+    if (patch === null) delete c.rand;
+    else {
+      c.rand = { ...(c.rand ?? { ...this.project.random[c.kind] }), ...patch };
+      if (c.rand.lo !== undefined && c.rand.hi !== undefined && c.rand.lo > c.rand.hi) [c.rand.lo, c.rand.hi] = [c.rand.hi, c.rand.lo];
+    }
+    this.edited();
+  }
+
+  setLimits(patch: Partial<{ minTime: number; pitchLimit: number }>): void {
+    if (patch.minTime !== undefined) this.project.minTime = Math.min(999, Math.max(1, Math.round(patch.minTime)));
+    if (patch.pitchLimit !== undefined) this.project.pitchLimit = Math.min(127, Math.max(0, Math.round(patch.pitchLimit)));
+    this.edited();
   }
 
   dirOf(line: number, kind: Kind): Direction {
@@ -677,8 +815,14 @@ export class App {
   }
 }
 
+/** An element without its End flag (which belongs to the slot, not the value). */
+function strip(e: El): El {
+  const { end: _end, ...rest } = e;
+  return rest;
+}
+
 export function defaultValue(kind: Kind): number {
-  return { time: 12, pitch: 60, velocity: 90, artic: 80 }[kind];
+  return { time: 12, pitch: 60, velocity: 90, artic: 13 }[kind];
 }
 
 function safeGet(k: string): string | null {

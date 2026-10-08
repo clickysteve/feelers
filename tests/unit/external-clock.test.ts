@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEMOS } from '../../src/demos/demos';
 import { Engine, cloneProject, type NoteEvent } from '../../src/engine/engine';
-import { makeLine, makeProject, makeSeries } from '../../src/engine/factory';
+import { makeLine, makeProject, makeColumn } from '../../src/engine/factory';
 import type { Project } from '../../src/engine/types';
 import { CLOCK, CONTINUE, START, STOP } from '../../src/midi/messages';
 import { PulseEstimator } from '../../src/scheduler/pulses';
@@ -13,18 +13,18 @@ const P120 = 60000 / (120 * 24); // 20.8333 ms per pulse at 120 BPM
 function proj(over: (p: Project) => void = () => {}): Project {
   const p = makeProject({
     tempo: 100,
-    series: [
-      makeSeries('time', 1, '24'),
-      makeSeries('time', 2, '6 18'),
-      makeSeries('pitch', 1, 'C4 D4 E4'),
-      makeSeries('pitch', 2, 'C3'),
-      makeSeries('velocity', 1, '100'),
-      makeSeries('artic', 1, '50'),
-      makeSeries('artic', 2, '200'),
+    columns: [
+      makeColumn('time', 1, '24'),
+      makeColumn('time', 2, '6 18'),
+      makeColumn('pitch', 1, 'C4 D4 E4'),
+      makeColumn('pitch', 2, 'C3'),
+      makeColumn('velocity', 1, '100'),
+      makeColumn('artic', 1, '8'),
+      makeColumn('artic', 2, '32'),
     ],
     lines: [
-      makeLine(0, { time: 'T1', pitch: 'P1' }),
-      makeLine(1, { time: 'T2', pitch: 'P2' }),
+      makeLine(0, { time: 'T1', pitch: 'P1' }, { overlap: 'mono' }),
+      makeLine(1, { time: 'T2', pitch: 'P2' }, { overlap: 'mono' }),
       makeLine(2, {}, { mute: true }),
       makeLine(3, {}, { mute: true }),
     ],
@@ -110,7 +110,7 @@ describe('external clock: 24 PPQN and transport', () => {
   });
 
   it('FC stops safely, keeps position, and F8 after FC does not advance', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(30);
     e.send(STOP);
@@ -144,12 +144,12 @@ describe('external clock: 24 PPQN and transport', () => {
 
   it('FA, F8.., FC, FA, F8..: a second Start is a genuinely fresh performance', () => {
     // Seed-dependent WOBBLE randomisation proves the random generator resets too.
-    // (DRIFT cells rewrite the material itself, under either clock, so are not used here.)
+    // (Fingers ? cells rewrite the material itself, under either clock, so WOBBLE is used here.)
     const p = proj((x) => {
-      const p1 = x.series.find((s) => s.id === 'P1')!;
-      p1.cells = p1.cells.map((c) => (c.t === 'v' ? { ...c, r: 1 as const } : c));
-      p1.rand = { amount: 2, type: 0, prob: 70 };
-      x.lines[1]!.heads.pitch.series = 'P1';
+      const p1 = x.columns.find((s) => s.id === 'P1')!;
+      p1.els = p1.els.map((c) => ({ ...c, ar: 3 as const }));
+      p1.rand = { amount: 2, type: 0, p1: 0, p2: 0, pw: 70 };
+      x.lines[1]!.heads.pitch.col = 'P1';
     });
     const fresh = ext(cloneProject(p));
     fresh.send(START);
@@ -189,7 +189,7 @@ describe('external clock: 24 PPQN and transport', () => {
   });
 
   it('FA while running restarts cleanly with nothing left hanging', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(40);
     e.send(START);
@@ -216,8 +216,8 @@ describe('external clock: the musical model is preserved', () => {
 
   it('reverse traversal under external clock matches the engine', () => {
     const p = proj((x) => {
-      x.lines[0]!.heads.pitch = { series: 'P1', start: 2, startDir: -1 };
-      x.lines[1]!.heads.time = { series: 'T2', start: 1, startDir: -1 };
+      x.lines[0]!.heads.pitch = { col: 'P1', start: 2, startDir: -1 };
+      x.lines[1]!.heads.time = { col: 'T2', start: 1, startDir: -1 };
     });
     const want = new Engine(cloneProject(p)).generate(200).map(sig);
     const e = ext(p);
@@ -242,7 +242,7 @@ describe('external clock: the musical model is preserved', () => {
 
   it('Time Adjust lines drift against straight lines exactly as under internal clock', () => {
     const p = proj((x) => {
-      x.lines[1]!.heads.time.series = 'T1';
+      x.lines[1]!.heads.time.col = 'T1';
       x.lines[1]!.timeScale = 1.5;
     });
     const e = ext(p);
@@ -262,7 +262,7 @@ describe('external clock: the musical model is preserved', () => {
   });
 
   it('note-offs follow the clock: an off is sent only when its pulse arrives', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A1'))); // 50% of 24 ticks = 12
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S1'))); // S/L 8: half of 24 ticks = 12
     e.send(START);
     e.pulses(12); // pulses 0..11
     const offs = () => e.sink.notes().filter((n) => !n.on && n.ch === 1);
@@ -272,19 +272,19 @@ describe('external clock: the musical model is preserved', () => {
   });
 
   it('fractional note-offs are placed between pulses, not quantised', () => {
-    const e = ext(proj((p) => (p.series.find((s) => s.id === 'A1')!.cells = [{ t: 'v', v: 37 }])));
+    const e = ext(proj((p) => (p.columns.find((s) => s.id === 'S1')!.els = [{ v: 5 }])));
     e.send(START);
     e.pulses(30);
-    const off = e.sink.notes().find((n) => !n.on && n.ch === 1)!; // 24 * 0.37 = 8.88 ticks
-    expect(off.t).toBeCloseTo(e.pulseTimes[8]! + 0.88 * P120, 6);
+    const off = e.sink.notes().find((n) => !n.on && n.ch === 1)!; // S/L 5: 24 * 5 / 16 = 7.5 ticks
+    expect(off.t).toBeCloseTo(e.pulseTimes[7]! + 0.5 * P120, 6);
   });
 
   it('strict monophony and legato overlap behave as under internal clock', () => {
     for (const legato of [false, true]) {
       const e = ext(
         proj((p) => {
-          p.lines[0]!.heads.artic.series = 'A2';
-          p.lines[0]!.legato = legato;
+          p.lines[0]!.heads.artic.col = 'S2';
+          p.lines[0]!.overlap = legato ? 'legato' : 'mono';
         }),
       );
       e.send(START);
@@ -386,7 +386,7 @@ describe('external clock: tempo estimate', () => {
 
 describe('external clock: loss, devices and switching', () => {
   it('clock loss while running: notes released, position held, clearly LOST, no tempo guessing', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(30);
     const h = e.engine.horizon;
@@ -415,7 +415,7 @@ describe('external clock: loss, devices and switching', () => {
   });
 
   it('device disconnection releases notes at once; reconnection resumes on the next pulse', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(30);
     e.sched.setInputReady(false);
@@ -430,7 +430,7 @@ describe('external clock: loss, devices and switching', () => {
   });
 
   it('changing input mid-performance releases notes and follows the new clock', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(30);
     e.sched.clockInterrupted(); // what the app does on an input change
@@ -442,7 +442,7 @@ describe('external clock: loss, devices and switching', () => {
   });
 
   it('EXTERNAL to INTERNAL stops cleanly; the internal transport then works as before', () => {
-    const e = ext(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const e = ext(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     e.send(START);
     e.pulses(30);
     e.sched.setSource('internal');
@@ -456,7 +456,7 @@ describe('external clock: loss, devices and switching', () => {
   });
 
   it('INTERNAL to EXTERNAL stops cleanly; local Start is ignored until the clock starts it', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(600);
     r.sched.setSource('external');

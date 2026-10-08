@@ -4,13 +4,26 @@
  * assembled from the four heads.
  */
 import type { App } from '../app';
-import type { NoteEvent } from '../engine/engine';
+import type { HeadRead, NoteEvent } from '../engine/engine';
 import { noteName } from '../engine/factory';
-import { activeLength } from '../engine/series';
-import type { Kind } from '../engine/types';
+import { QUANT_DIRS, ROOT_NAMES, SCALES, scaleLabel } from '../engine/scale';
+import type { Kind, Overlap, QuantDir } from '../engine/types';
 import { KINDS, KIND_LABEL, KIND_SHORT } from '../engine/types';
 import { LINE_COLORS } from './bank';
 import { h, replace, stepper, type Stepper } from './dom';
+
+const OVERLAPS: [Overlap, string, string][] = [
+  ['written', 'AS WRITTEN', 'Every note keeps its length from S/L, so S/L over 16 overlaps the next note (as in Fingers). A repeated pitch is always released first.'],
+  ['legato', 'LEGATO', 'The previous note is released just after the next one starts, so a mono synth glides.'],
+  ['mono', 'MONO', 'Strict monophony: each note ends before the next one starts (safest for CV/gate).'],
+];
+
+const DIR_LABEL: Record<QuantDir, string> = { nearest: '≈', down: '↓', up: '↑' };
+const DIR_HELP: Record<QuantDir, string> = {
+  nearest: 'Nearest scale note; a tie goes up.',
+  down: 'The scale note at or below.',
+  up: 'The scale note at or above.',
+};
 
 const RATIOS: [string, number][] = [
   ['½', 0.5],
@@ -26,7 +39,13 @@ interface Card {
   root: HTMLElement;
   pause: HTMLButtonElement;
   mute: HTMLButtonElement;
-  legato: HTMLButtonElement;
+  overlap: Record<Overlap, HTMLButtonElement>;
+  scaleMode: Record<'global' | 'own' | 'off', HTMLButtonElement>;
+  scaleOwn: HTMLElement;
+  scaleRoot: HTMLSelectElement;
+  scaleSel: HTMLSelectElement;
+  scaleDir: HTMLSelectElement;
+  scaleNote: HTMLElement;
   name: HTMLInputElement;
   channel: HTMLSelectElement;
   steppers: Record<'program' | 'transpose' | 'vel' | 'scale', Stepper>;
@@ -47,6 +66,7 @@ export class LinesView {
     app.on('lines', () => this.update());
     app.on('transport', () => this.update());
     app.on('heads', () => this.updateLive());
+    app.on('scale', () => this.update());
     this.build();
   }
 
@@ -65,10 +85,25 @@ export class LinesView {
 
     const pause = btn('PAUSE', 'Pause this line: it stops reading and keeps its place. Press again to carry on.', () => app.togglePause(i), 'pause');
     const mute = btn('MUTE', 'Mute this line: its heads keep moving silently.', () => app.toggleMute(i), 'mute');
-    const legato = btn('LEGATO', 'Legato: let each note overlap the next one briefly (mono synths can glide). Off: strict monophony, each note ends before the next.', () => {
-      cfg().legato = !cfg().legato;
-      app.lineChanged();
-    }, 'legato');
+    const overlap = {} as Card['overlap'];
+    for (const [o, label, help] of OVERLAPS) {
+      overlap[o] = h('button', { class: 'seg', help, 'data-testid': `overlap-${o}-${i}`, onclick: () => app.setOverlap(i, o) }, label);
+    }
+    const scaleMode = {} as Card['scaleMode'];
+    const modes: ['global' | 'own' | 'off', string, string][] = [
+      ['global', 'G', 'Follow the global Scale Mode (top bar).'],
+      ['own', 'OWN', 'Use a scale of this line\'s own, whatever the global setting.'],
+      ['off', 'OFF', 'Ignore Scale Mode: this line plays its pitches unchanged.'],
+    ];
+    for (const [m, label, help] of modes) scaleMode[m] = h('button', { class: 'seg', help, 'data-testid': `lscale-${m}-${i}`, onclick: () => app.setLineScale(i, { mode: m }) }, label);
+    const scaleRoot = h('select', { 'aria-label': `Line ${i + 1} scale root`, help: 'Root of this line\'s scale.', 'data-testid': `lscale-root-${i}` }, ...ROOT_NAMES.map((n, r) => h('option', { value: String(r) }, n)));
+    scaleRoot.addEventListener('change', () => app.setLineScale(i, { root: Number(scaleRoot.value) }));
+    const scaleSel = h('select', { 'aria-label': `Line ${i + 1} scale`, help: 'This line\'s scale.', 'data-testid': `lscale-scale-${i}` }, ...SCALES.map((x) => h('option', { value: x.id }, x.name)));
+    scaleSel.addEventListener('change', () => app.setLineScale(i, { scale: scaleSel.value }));
+    const scaleDir = h('select', { 'aria-label': `Line ${i + 1} quantise direction`, help: 'How out-of-scale pitches move: nearest (ties go up), down or up.', 'data-testid': `lscale-dir-${i}` }, ...QUANT_DIRS.map((d) => h('option', { value: d }, `${DIR_LABEL[d]} ${d}`)));
+    scaleDir.addEventListener('change', () => app.setLineScale(i, { dir: scaleDir.value as QuantDir }));
+    const scaleOwn = h('span', { class: 'scale-row' }, scaleRoot, scaleSel, scaleDir);
+    const scaleNote = h('span', { class: 'scale-note', 'data-testid': `lscale-note-${i}` });
     const name = h('input', { class: 'name', value: cfg().name, 'aria-label': `Line ${i + 1} name`, help: 'Line name.' });
     name.addEventListener('change', () => {
       cfg().name = name.value.slice(0, 24) || `Feeler ${i + 1}`;
@@ -130,17 +165,17 @@ export class LinesView {
     const rows = KINDS.map((k) => {
       const select = h(
         'select',
-        { 'aria-label': `Line ${i + 1} ${KIND_LABEL[k]} series`, help: `Which ${KIND_LABEL[k]} series line ${i + 1} reads. Lines may share series.`, 'data-testid': `assign-${i}-${k}` },
-        ...app.project.series.filter((s) => s.kind === k).map((s) => h('option', { value: s.id }, s.name)),
+        { 'aria-label': `Line ${i + 1} ${KIND_LABEL[k]} column`, help: `Which ${KIND_LABEL[k]} column line ${i + 1} reads (from its top; HEAD HERE in the editor picks any element). Lines may share columns.`, 'data-testid': `assign-${i}-${k}` },
+        ...app.project.columns.filter((s) => s.kind === k).map((s) => h('option', { value: s.id }, s.name)),
       );
       select.addEventListener('change', () => app.assign(i, k, select.value));
       const dir = h('button', { class: 'tiny dir', help: `Reverse line ${i + 1}'s ${KIND_LABEL[k]} head. While stopped this sets its starting direction.`, 'data-testid': `dir-${i}-${k}`, onclick: () => app.toggleDir(i, k) }, '→');
       const pos = h('span', { class: 'pos' });
       heads[k] = { select, dir, pos };
-      assembly[k] = h('span', { class: 'asm-v' }, '·');
+      assembly[k] = h('span', { class: 'asm-v', 'data-testid': `asm-${k}-${i}` }, '·');
       return h('div', { class: 'head-row' }, h('span', { class: 'kl' }, KIND_SHORT[k]), select, dir, pos, assembly[k]);
     });
-    const result = h('span', { class: 'result' }, '·');
+    const result = h('span', { class: 'result', 'data-testid': `result-${i}` }, '·');
     const count = h('span', { class: 'count' });
 
     const root = h(
@@ -164,10 +199,38 @@ export class LinesView {
         btn('RESET', 'Return this line\'s heads to their starting cells and start it again now.', () => app.resetLine(i), 'reset'),
         btn('REV', 'Reverse all four heads of this line.', () => app.reverseLine(i), 'rev'),
       ),
-      h('div', { class: 'heads' }, ...rows, h('div', { class: 'asm-row', help: 'The note just assembled: one value from each head, plus this line\'s transposition and offsets.' }, h('span', { class: 'kl' }, 'NOTE'), result)),
-      h('div', { class: 'perf' }, steppers.transpose, steppers.vel, steppers.scale, ratios, nudges, steppers.program, legato),
+      h(
+        'div',
+        { class: 'heads' },
+        ...rows,
+        h(
+          'div',
+          { class: 'asm-row', help: 'The note just played. When Scale Mode moved it, the pitch before the scale (after transposition) is shown first: C#4 → D4 +1.' },
+          h('span', { class: 'kl' }, 'NOTE'),
+          result,
+        ),
+      ),
+      h(
+        'div',
+        { class: 'perf' },
+        steppers.transpose,
+        steppers.vel,
+        steppers.scale,
+        ratios,
+        nudges,
+        steppers.program,
+        h('span', { class: 'grp', help: 'How this line\'s notes may overlap.' }, h('span', { class: 'lbl' }, 'NOTES'), h('span', { class: 'seggrp', role: 'group', 'aria-label': `Line ${i + 1} overlap` }, ...Object.values(overlap))),
+        h(
+          'span',
+          { class: 'grp scale-row', help: 'Scale Mode for this line: follow the global scale, use its own, or ignore it. The stored pitches never change.' },
+          h('span', { class: 'lbl' }, 'SCALE'),
+          h('span', { class: 'seggrp', role: 'group', 'aria-label': `Line ${i + 1} scale mode` }, ...Object.values(scaleMode)),
+          scaleOwn,
+          scaleNote,
+        ),
+      ),
     );
-    return { root, pause, mute, legato, name, channel, steppers, delay, heads, assembly, result, count };
+    return { root, pause, mute, overlap, scaleMode, scaleOwn, scaleRoot, scaleSel, scaleDir, scaleNote, name, channel, steppers, delay, heads, assembly, result, count };
   }
 
   update(): void {
@@ -179,8 +242,20 @@ export class LinesView {
       c.pause.setAttribute('aria-pressed', String(rt.paused));
       c.mute.classList.toggle('on', cfg.mute);
       c.mute.setAttribute('aria-pressed', String(cfg.mute));
-      c.legato.classList.toggle('on', cfg.legato);
-      c.legato.setAttribute('aria-pressed', String(cfg.legato));
+      for (const [o] of OVERLAPS) {
+        c.overlap[o].classList.toggle('on', cfg.overlap === o);
+        c.overlap[o].setAttribute('aria-pressed', String(cfg.overlap === o));
+      }
+      for (const m of ['global', 'own', 'off'] as const) {
+        c.scaleMode[m].classList.toggle('on', cfg.scale.mode === m);
+        c.scaleMode[m].setAttribute('aria-pressed', String(cfg.scale.mode === m));
+      }
+      c.scaleOwn.style.display = cfg.scale.mode === 'own' ? '' : 'none';
+      c.scaleRoot.value = String(cfg.scale.root);
+      c.scaleSel.value = cfg.scale.scale;
+      c.scaleDir.value = cfg.scale.dir;
+      for (const o of c.scaleDir.options) o.title = DIR_HELP[o.value as QuantDir];
+      c.scaleNote.textContent = cfg.scale.mode === 'global' ? scaleLabel(app.lineScale(i)) : cfg.scale.mode === 'off' ? 'unchanged' : '';
       c.root.classList.toggle('muted', cfg.mute);
       c.root.classList.toggle('paused', rt.paused);
       if (document.activeElement !== c.name) c.name.value = cfg.name;
@@ -195,7 +270,7 @@ export class LinesView {
         app.transport === 'stopped' ? 'Entry delay in ticks after Start.' : 'Live shift since Start. Each press moves the line 3 ticks (shift: 24) against the others.';
       for (const k of KINDS) {
         const hd = rt.heads[k];
-        c.heads[k].select.value = hd.series;
+        c.heads[k].select.value = hd.pos.col;
         c.heads[k].dir.textContent = hd.dir === 1 ? '→' : '←';
         c.heads[k].dir.classList.toggle('on', hd.dir === -1);
         c.heads[k].dir.setAttribute('aria-label', `Line ${i + 1} ${KIND_LABEL[k]} direction: ${hd.dir === 1 ? 'forward' : 'reverse'}`);
@@ -207,10 +282,12 @@ export class LinesView {
   updateLive(): void {
     const app = this.app;
     this.cards.forEach((c, i) => {
+      const sc = app.engine.score;
       for (const k of KINDS) {
         const v = app.headView(i, k);
-        const s = app.engine.series(v.series);
-        c.heads[k].pos.textContent = s ? `${v.index + 1}/${activeLength(s)}` : '';
+        const place = app.column(v.col) ? app.seriesPlace({ col: v.col, i: v.index }, sc) : null;
+        c.heads[k].pos.textContent = place && place.at > 0 ? `${place.at}/${place.of}` : '';
+        c.heads[k].pos.dataset.help = 'Position of the head in its series (End of Series and Column Link decide where a series starts and ends).';
       }
       const ev = app.lastNotes[i] ?? null;
       this.showAssembly(c, ev);
@@ -220,25 +297,49 @@ export class LinesView {
 
   private showAssembly(c: Card, ev: NoteEvent | null): void {
     if (!ev) {
-      for (const k of KINDS) c.assembly[k].textContent = '·';
+      for (const k of KINDS) {
+        c.assembly[k].textContent = '·';
+        c.assembly[k].classList.remove('rnd', 'held');
+      }
       c.result.textContent = '·';
       return;
     }
-    const r = ev.reads;
-    const show = (k: Kind, f: (v: number) => string) => {
-      const x = r[k];
-      c.assembly[k].textContent = x.rest ? 'rest' : x.value === null ? '·' : f(x.value) + (x.randomised ? '*' : '');
-      c.assembly[k].classList.toggle('rnd', x.randomised);
+    const show = (k: Kind, x: HeadRead, f: (v: number) => string) => {
+      const el = c.assembly[k];
+      el.classList.toggle('rnd', x.randomised);
+      el.classList.toggle('held', x.held);
+      if (x.held) {
+        el.textContent = 'hold';
+        el.dataset.help = 'This head waited: a Rest (R) on another head held it for this note.';
+        return;
+      }
+      const v = x.value === null ? '·' : f(x.value) + (x.randomised ? '*' : '');
+      el.textContent = x.rest ? `${v} ${x.rest}` : v;
+      el.dataset.help = x.randomised ? 'Randomised when read (*).' : x.rest ? (x.rest === 'R' ? 'Rest (R): silent; only Time and this head moved on.' : 'rest (r): silent; every head moved on.') : '';
     };
-    show('time', (v) => `${v}t`);
-    show('pitch', (v) => noteName(v));
-    show('velocity', (v) => String(v));
-    show('artic', (v) => `${v}%`);
-    c.result.textContent = ev.silent
-      ? ev.muted
-        ? 'muted'
-        : 'rest'
-      : `${noteName(ev.pitch)}  vel ${ev.velocity}  len ${fmtTicks(ev.duration)} of ${fmtTicks(ev.time)}`;
+    const r = ev.reads;
+    show('time', r.time, (v) => `${v}t`);
+    show('pitch', r.pitch, (v) => noteName(v));
+    show('velocity', r.velocity, (v) => String(v));
+    show('artic', r.artic, (v) => `${v}/16`);
+    if (ev.silent) {
+      replace(c.result, h('span', { class: 'rest' }, ev.muted ? 'muted' : 'rest'), ` ${fmtTicks(ev.time)}`);
+      return;
+    }
+    const pitch =
+      ev.scaleDelta !== 0
+        ? [
+            h('span', { class: 'src', 'data-testid': 'pre-pitch' }, noteName(ev.prePitch)),
+            h('span', { class: 'arr' }, ' → '),
+            h('span', { class: 'out' }, noteName(ev.pitch)),
+            h('span', { class: 'dl', 'data-testid': 'scale-delta' }, ev.scaleDelta > 0 ? `+${ev.scaleDelta}` : `−${-ev.scaleDelta}`),
+          ]
+        : [h('span', { class: 'out' }, noteName(ev.pitch))];
+    replace(c.result, ...pitch, `  v${ev.velocity}  ${fmtTicks(ev.duration)}/${fmtTicks(ev.time)}`);
+    c.result.dataset.help =
+      ev.scaleDelta !== 0
+        ? `Played ${noteName(ev.pitch)}: the pitch ${noteName(ev.prePitch)} (series value plus transposition) was moved ${ev.scaleDelta > 0 ? 'up' : 'down'} ${Math.abs(ev.scaleDelta)} by Scale Mode. Velocity, then length / time to the next note.`
+        : 'The note just played: pitch, velocity, then length / time to the next note.';
   }
 }
 

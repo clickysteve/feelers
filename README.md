@@ -3,18 +3,22 @@
 **Put out the Feelers.**
 
 Feelers is a browser-based interactive MIDI composition instrument. Four
-monophonic lines reach out into a bank of parameter series. Every note is
-assembled on the spot from four independently moving read heads, one each on
-a **Time**, **Pitch**, **Velocity** and **Articulation** series. Because the
+lines reach out into a bank of parameter columns. Every note is assembled on
+the spot from four independently moving read heads, one each on a **Time**,
+**Pitch**, **Velocity** and **S/L** (staccato/legato) series. Because the
 series have different lengths, directions and control elements, the
 combinations keep evolving, and you steer them while they play: rewrite
-material, reverse heads, loop, skip, transpose, pause, mute and push lines out
-of phase.
+material, reverse heads, loop, skip, rest, transpose, pause, mute, push lines
+out of phase, and let marked values wander.
 
-It is the third of a small collection of software archaeology experiments,
-after *emmm* (Intelligent Music's M) and *FrakMC* (Hugh McDowell's Fractal
-Music Composer), and is inspired by Emile Tobenfeld's **Dr. T's Fingers**
-(Atari ST, 1988) and its successor **MIDI-AX**.
+The musical model follows Emile Tobenfeld's **Dr. T's Fingers** (Atari ST,
+1988) as documented in its manual: columns of 16 elements split by End of
+Series and joined by Column Link, Skip / Rest / rest / Loop marks, Time as
+the wait before each note, S/L in sixteenths, auto-randomisation and Restore
+Last Start. Around that core it adds modern facilities (Web MIDI, external
+MIDI Clock, note safety, Scale Mode, palettes, persistence) and a few
+clearly labelled extensions. It belongs to a family of independent browser
+instruments with *emmm*, *FrakMC* and *ANVIL*.
 
 > Feelers is an independent browser-based interactive MIDI composition
 > instrument inspired by the musical concepts explored in Dr. T's Fingers and
@@ -33,22 +37,28 @@ Music Composer), and is inspired by Emile Tobenfeld's **Dr. T's Fingers**
 3. Press **▶ START** (or Space). The default setup, *First Contact*, starts
    playing four lines on MIDI channels 1-4.
 4. Watch the numbered tabs move across the series bank: each line has one tab
-   on a Time, Pitch, Velocity and Articulation strip. The **NOTE** row in each
-   line panel shows the four values that made the note you just heard.
+   on a Time, Pitch, Velocity and S/L strip. Each line panel shows the four
+   values that made the note you just heard.
 5. Play with it:
-   - Click a pitch cell and press ↑ / ↓, or type a note name and Enter.
+   - Click a pitch element and press ↑ / ↓, or type a note name and Enter.
    - Click **→** beside a head to reverse it.
    - Set **TIME×** on one line to 1.5, or nudge it to 1.010, and listen to it
      drift.
    - **PAUSE**, **MUTE**, **NEXT**, **STEP**, **RESET** and **REV** act on one
      line; **TRANS** and **VEL±** transpose it.
-   - Put **END**, **LINK**, **SKIP**, **REST** or loop brackets into a series
-     from the edit bar.
+   - Mark elements with **SKIP**, **REST R** / **rest r**, **END**, **LOOP**,
+     **?** / **¿** from the edit bar (or keys S, R, E, L, A); the **→** beside a
+     column name links it to the next column of its kind.
+   - Turn on **SCALE** to constrain the pitches; moved notes are marked in the
+     bank and shown as `C#4 → D4 +1` in the line panels. Each line can follow
+     the global scale (G), use its own (OWN) or ignore it (OFF).
+   - **RESTORE** returns every value to how it was at the last Start (after
+     `?` elements have wandered); press it again to undo.
    - Press **STORE** then **1** to keep the performance state; press **1** to
      return to it.
-6. **☰ PROJECT** holds the demos, saving, JSON export/import, options, and the
-   last nine takes as MIDI files. Hover over anything for an explanation in
-   the bottom line; **?** opens the full guide.
+6. **☰ PROJECT** holds the demos, saving, JSON export/import, options, the
+   palette, and the last nine takes as MIDI files. Hover over anything for an
+   explanation in the bottom line; **?** opens the full guide.
 
 ### Keyboard
 
@@ -57,11 +67,13 @@ Music Composer), and is inspired by Emile Tobenfeld's **Dr. T's Fingers**
 | Space | Start / Pause / Continue |
 | Esc | Deselect, then Stop |
 | 1-9, Shift+1-9 | Recall / store performance memory |
-| ← → | Move the cell selection |
+| ← → | Move the element selection |
 | ↑ ↓ (Shift) | Change the selected value (by an octave / 10) |
 | Enter | Type a value |
-| R S E L [ ] V | Make the cell REST, SKIP, END, LINK, loop start, loop end, value |
-| Insert / Delete | Insert / delete a cell |
+| S / E / R | Skip on / off, End of Series on / off, Rest → rest → none |
+| A / W | Auto-randomise ? → ¿ → none, WOBBLE on / off |
+| L / B / V / K | Loop or value, blank, value, Column Link of the column |
+| Insert / Delete | Insert / delete an element |
 
 ## Demos
 
@@ -69,9 +81,17 @@ All written for Feelers (none derived from original material):
 
 - **First Contact**: series of different lengths interlock; 3:2 bells.
 - **Phase Garden**: one melody at four speeds a hair apart.
-- **Clockwork**: loops, skips, rests, END and LINK.
-- **Drift**: seeded randomisation that wanders and replays identically.
+- **Clockwork**: Loop, Skip, Rest and rest, End and Column Link.
+- **Drift**: auto-randomised values that wander; RESTORE brings them home.
 - **Four Lanes**: gate-friendly setup for MIDI-to-CV modules, clock on.
+- **Scale Lens**: chromatic material through Scale Mode, every change shown.
+
+## Palettes
+
+**☰ PROJECT → Palette** recolours the whole instrument: Feelers (default),
+Classic (1-bit), Dark and Colour are built in; editing one makes a copy.
+Palettes can be exported and imported (emmm palette files work too). A
+palette is a browser preference, not part of a project.
 
 ## Hardware: Mac, browser, USB MIDI, modular
 
@@ -80,10 +100,13 @@ All written for Feelers (none derived from original material):
   (FB) and Song Position 0 on Stop. Pause sends Stop, Continue sends Continue.
   Clock and transport are separate kinds of message; Feelers sends both when
   CLOCK is on and neither when it is off.
-- Articulation is the gate length (percent of the note's time value). With
-  **LEGATO** off a line is strictly monophonic: each gate closes before the
-  next opens, which suits CV/gate interfaces. With LEGATO on, notes overlap
-  briefly so mono voices can glide.
+- S/L is the gate length, in sixteenths of the time to the next note (8 =
+  half, 15 = just before the next, 16 = touching). **NOTES** per line:
+  **AS WRITTEN** keeps every length, so S/L over 16 overlaps (as Fingers did;
+  needs a polyphonic voice); **MONO** is strict monophony, each gate closing
+  before the next opens, which suits CV/gate interfaces; **LEGATO** overlaps
+  briefly so mono voices can glide. A repeated pitch is always released
+  before it is struck again.
 - For a Squarp Hermod+ (or similar MIDI-to-CV module): put its tracks on
   channels 1-4, set it to follow external MIDI clock if you want its
   sequencer or LFOs in time, and try the *Four Lanes* demo.
@@ -100,7 +123,8 @@ All written for Feelers (none derived from original material):
   exactly one tick (24 per quarter note), so the device's clock, not a tempo
   estimate, drives every note and note-off.
   - **FA Start**: a fresh performance from the starting state (heads, loop
-    counters and random seed reset), exactly like START.
+    counters and random seed reset), exactly like START, and remembered for
+    RESTORE.
   - **FC Stop**: stops and releases every note, keeping the position, heads
     and each line's remaining wait.
   - **FB Continue**: carries on from where FC stopped. Nothing is reset.
@@ -127,8 +151,9 @@ All written for Feelers (none derived from original material):
   only the events up to the next pulse: notes leave as the pulse arrives (plus
   browser input latency, typically a few milliseconds) and their timing
   jitter follows the incoming clock and the browser. Events between two
-  pulses (from TIME× or articulation) are placed using the measured pulse
-  period.
+  pulses (from TIME× or S/L) are placed using the measured pulse period.
+  Fingers itself could send clock but not follow one; EXT is a modern
+  facility.
 
 **Testing with a Hermod+ (or any clock source):** connect it by USB, choose
 it as the EXT input and Feelers' MIDI output, press play on the Hermod+:
@@ -141,16 +166,21 @@ has been tested yet. Reports welcome.
 
 ## Documentation
 
-- [docs/RESEARCH.md](docs/RESEARCH.md): history, sources, findings, and how
-  reliable they are.
-- [docs/BEHAVIOUR.md](docs/BEHAVIOUR.md): the musical model, historical
-  versus implemented.
-- [docs/UNCERTAINTIES.md](docs/UNCERTAINTIES.md): what is unknown or inferred.
-- [docs/PROVENANCE.md](docs/PROVENANCE.md): what is historical, reconstructed,
-  designed or new.
+- [docs/HISTORICAL_AUDIT.md](docs/HISTORICAL_AUDIT.md): the evidence matrix
+  comparing Feelers with the Fingers sources.
+- [docs/BEHAVIOUR.md](docs/BEHAVIOUR.md): the musical model, layer by layer
+  (documented Fingers behaviour, choices, modern facilities, extensions).
+- [docs/UNCERTAINTIES.md](docs/UNCERTAINTIES.md): what the sources leave open,
+  and the choice made for each.
+- [docs/PROVENANCE.md](docs/PROVENANCE.md): where every feature comes from.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): engine, scheduler, MIDI,
-  persistence, UI.
-- [docs/FORMAT.md](docs/FORMAT.md): the project file format.
+  Scale Mode, persistence, UI.
+- [docs/DESIGN.md](docs/DESIGN.md): the design language, palettes and the
+  conventions shared with the other instruments.
+- [docs/FORMAT.md](docs/FORMAT.md): the project file format and migration of
+  older projects.
+- [docs/RESEARCH.md](docs/RESEARCH.md): the first research pass (partly
+  superseded by the audit).
 - [docs/MIDI-AX.md](docs/MIDI-AX.md): MIDI-AX research and a future
   Performance Mode.
 - [docs/ROADMAP.md](docs/ROADMAP.md): what remains.
