@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeLine, makeProject, makeSeries } from '../../src/engine/factory';
+import { makeLine, makeProject, makeColumn } from '../../src/engine/factory';
 import type { Project } from '../../src/engine/types';
 import { CLOCK, CONTINUE, START, STOP } from '../../src/midi/messages';
 import { checkPairing, rig } from './helpers';
@@ -7,18 +7,18 @@ import { checkPairing, rig } from './helpers';
 function proj(over: (p: Project) => void = () => {}): Project {
   const p = makeProject({
     tempo: 120,
-    series: [
-      makeSeries('time', 1, '12'),
-      makeSeries('time', 2, '6 18'),
-      makeSeries('pitch', 1, 'C4 D4 E4'),
-      makeSeries('pitch', 2, 'C3'),
-      makeSeries('velocity', 1, '100'),
-      makeSeries('artic', 1, '50'),
-      makeSeries('artic', 2, '200'),
+    columns: [
+      makeColumn('time', 1, '12'),
+      makeColumn('time', 2, '6 18'),
+      makeColumn('pitch', 1, 'C4 D4 E4'),
+      makeColumn('pitch', 2, 'C3'),
+      makeColumn('velocity', 1, '100'),
+      makeColumn('artic', 1, '8'),
+      makeColumn('artic', 2, '32'),
     ],
     lines: [
-      makeLine(0, { time: 'T1', pitch: 'P1' }),
-      makeLine(1, { time: 'T2', pitch: 'P2' }),
+      makeLine(0, { time: 'T1', pitch: 'P1' }, { overlap: 'mono' }),
+      makeLine(1, { time: 'T2', pitch: 'P2' }, { overlap: 'mono' }),
       makeLine(2, {}, { mute: true }),
       makeLine(3, {}, { mute: true }),
     ],
@@ -79,7 +79,7 @@ describe('note pairing and monophony', () => {
   });
 
   it('a line never sounds more than one note (strict mono, long articulation)', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(4000);
     r.sched.stop();
@@ -91,8 +91,8 @@ describe('note pairing and monophony', () => {
   it('legato lets the next note start before the previous ends', () => {
     const r = rig(
       proj((p) => {
-        p.lines[0]!.heads.artic.series = 'A2';
-        p.lines[0]!.legato = true;
+        p.lines[0]!.heads.artic.col = 'S2';
+        p.lines[0]!.overlap = 'legato';
       }),
     );
     r.sched.start();
@@ -111,9 +111,9 @@ describe('note pairing and monophony', () => {
   it('repeated notes are cut before being re-struck', () => {
     const r = rig(
       proj((p) => {
-        p.series.find((s) => s.id === 'P1')!.cells = [{ t: 'v', v: 60 }];
-        p.lines[0]!.heads.artic.series = 'A2';
-        p.lines[0]!.legato = true;
+        p.columns.find((s) => s.id === 'P1')!.els = [{ v: 60 }];
+        p.lines[0]!.heads.artic.col = 'S2';
+        p.lines[0]!.overlap = 'legato';
       }),
     );
     r.sched.start();
@@ -128,8 +128,8 @@ describe('note pairing and monophony', () => {
     const r = rig(
       proj((p) => {
         p.lines[1]!.channel = 1;
-        p.lines[1]!.heads.pitch.series = 'P1';
-        p.lines[1]!.heads.time.series = 'T1';
+        p.lines[1]!.heads.pitch.col = 'P1';
+        p.lines[1]!.heads.time.col = 'T1';
       }),
     );
     r.sched.start();
@@ -149,7 +149,7 @@ describe('note pairing and monophony', () => {
   });
 
   it('changing a channel mid-note releases on the original channel', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(300);
     r.engine.project.lines[0]!.channel = 5;
@@ -160,7 +160,7 @@ describe('note pairing and monophony', () => {
   });
 
   it('muting releases the line and silences further notes', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(500);
     r.engine.project.lines[0]!.mute = true;
@@ -170,6 +170,95 @@ describe('note pairing and monophony', () => {
     expect(r.sink.notes().filter((n) => n.ch === 1 && n.on).length).toBe(before);
     r.sched.stop();
     expect(checkPairing(r.sink).ok).toBe(true);
+  });
+});
+
+describe('overlap as written (Fingers: S/L 16 and above overlap)', () => {
+  const written = (over: (p: Project) => void = () => {}) =>
+    proj((p) => {
+      p.lines[0]!.overlap = 'written';
+      p.lines[0]!.heads.artic.col = 'S2'; // S/L 32: twice the next Time value
+      over(p);
+    });
+
+  it('each note keeps its computed length, so notes overlap', () => {
+    const r = rig(written());
+    r.sched.start();
+    r.run(2000);
+    r.sched.stop();
+    const res = checkPairing(r.sink);
+    expect(res.ok).toBe(true);
+    expect(res.maxPolyPerChannel[1]).toBe(2);
+    const msgs = r.sink.notes().filter((n) => n.ch === 1);
+    const firstOn = msgs.find((m) => m.on)!;
+    const firstOff = msgs.find((m) => !m.on && m.note === firstOn.note)!;
+    // 24 ticks of 20.833 ms
+    expect(firstOff.t - firstOn.t).toBeCloseTo(500, 5);
+  });
+
+  it('S/L 16 touches: the note-off comes before the next note-on at the same moment', () => {
+    const r = rig(
+      written((p) => {
+        p.columns.find((c) => c.id === 'S3')!.els = [{ v: 16 }];
+        p.lines[0]!.heads.artic.col = 'S3';
+      }),
+    );
+    r.sched.start();
+    r.run(1500);
+    r.sched.stop();
+    const res = checkPairing(r.sink);
+    expect(res.ok).toBe(true);
+    expect(res.maxPolyPerChannel[1]).toBe(1);
+    const msgs = r.sink.notes().filter((n) => n.ch === 1);
+    const ons = msgs.filter((m) => m.on);
+    const offs = msgs.filter((m) => !m.on);
+    expect(offs[0]!.t).toBeCloseTo(ons[1]!.t, 6);
+  });
+
+  it('a repeated pitch is released before it is struck again', () => {
+    const r = rig(written((p) => (p.columns.find((s) => s.id === 'P1')!.els = [{ v: 60 }])));
+    r.sched.start();
+    r.run(1500);
+    const msgs = r.sink.notes().filter((n) => n.ch === 1);
+    for (let i = 1; i < msgs.length; i++) if (msgs[i]!.on) expect(msgs[i - 1]!.on).toBe(false);
+    r.sched.stop();
+    expect(checkPairing(r.sink).ok).toBe(true);
+  });
+
+  it('muting or pausing the line releases every overlapping note', () => {
+    const r = rig(written());
+    r.sched.start();
+    r.run(700);
+    r.sched.releaseLine(0);
+    expect(r.out.heldCount()).toBe(0);
+    r.sched.pause();
+    r.sched.stop();
+    expect(checkPairing(r.sink).ok).toBe(true);
+  });
+
+  it('pause and stop leave nothing hanging', () => {
+    const r = rig(written());
+    r.sched.start();
+    r.run(900);
+    r.sched.pause();
+    expect(r.out.heldCount()).toBe(0);
+    r.sched.resume();
+    r.run(900);
+    r.sched.stop();
+    expect(checkPairing(r.sink).ok).toBe(true);
+  });
+});
+
+describe('Restore Last Start capture', () => {
+  it('Start remembers the state for Restore Last Start', () => {
+    const r = rig(proj());
+    expect(r.engine.canRestore).toBe(false);
+    r.sched.start();
+    expect(r.engine.canRestore).toBe(true);
+    r.engine.column('P1')!.els[0]!.v = 70;
+    r.engine.toggleRestore();
+    expect(r.engine.column('P1')!.els[0]!.v).toBe(60);
+    r.sched.stop();
   });
 });
 
@@ -226,7 +315,7 @@ describe('transport', () => {
   });
 
   it('stop releases sounding notes immediately and cancels queued ones', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(510);
     r.sched.stop();
@@ -329,7 +418,7 @@ describe('MIDI clock and transport messages', () => {
 
 describe('device safety', () => {
   it('switching device releases held notes on the old one', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(300);
     const old = r.sink;
@@ -356,7 +445,7 @@ describe('device safety', () => {
   });
 
   it('panic releases everything and sends All Notes Off on all channels', () => {
-    const r = rig(proj((p) => (p.lines[0]!.heads.artic.series = 'A2')));
+    const r = rig(proj((p) => (p.lines[0]!.heads.artic.col = 'S2')));
     r.sched.start();
     r.run(300);
     r.out.panic();

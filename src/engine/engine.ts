@@ -6,41 +6,62 @@
  * engine for every note whose onset falls before a horizon; the engine walks
  * each line's heads to assemble those notes, in onset order.
  *
+ * Note assembly follows the Fingers manual:
+ *  - A note's Time value is the wait *before* that note. Its length is the
+ *    *next* Time value (after time adjust) times its S/L value / 16.
+ *  - A Rest (R) silences the note; only the Time head and the head that read
+ *    the Rest advance. A rest (r) silences the note; every head advances.
+ * Scale Mode (a modern facility) constrains the final pitch without touching
+ * the stored series; see engine/scale.ts for the order of pitch processing.
+ *
  * Interventions (reverse, next, reset, pause, edits) are applied directly to
- * the engine state. Because notes are only assembled when they fall inside
- * the scheduler's short lookahead window, interventions are heard within that
+ * the engine state. Notes are only assembled when they fall inside the
+ * scheduler's short lookahead window, so interventions are heard within that
  * window and never require precomputed note lists to be rebuilt.
  */
+import { DEFAULT_CHOICES, type EngineChoices } from './choices';
 import { Rng } from './rng';
-import { newHead, readHead, type HeadState } from './series';
-import type { Direction, Kind, LineConfig, Project, Series, Snapshot } from './types';
+import { constrain, effectiveScale } from './scale';
+import { NOTHING, Score, newHead, peekHead, pitchRanges, rawNext, readHead, samePos, seriesKey, step, type HeadState, type Read, type ReadContext } from './series';
+import type { Column, Direction, GlobalScale, Kind, LineConfig, Overlap, Pos, Project, RandomSettings, RestMark, Snapshot } from './types';
 import { KINDS, LINE_COUNT } from './types';
 
 export interface HeadRead {
-  series: string;
-  index: number | null;
+  pos: Pos | null;
   value: number | null;
-  rest: boolean;
+  rest: RestMark | null;
   randomised: boolean;
+  /** The head did not move for this note (held by a Rest elsewhere). */
+  held: boolean;
 }
 
 export interface NoteEvent {
   line: number;
   /** Onset in ticks since Start. */
   tick: number;
-  /** Inter-onset time to this line's next note, in ticks (after time adjust). */
+  /** Time to this line's next note, in ticks (the next Time value after time adjust). */
   time: number;
-  /** Sounding length in ticks. */
+  /** Sounding length in ticks: time x S/L / 16. */
   duration: number;
+  /** Emitted MIDI pitch (after transposition and Scale Mode). */
   pitch: number;
+  /** Pitch after transposition, before Scale Mode. */
+  prePitch: number;
+  /** Change made by Scale Mode (pitch - prePitch). */
+  scaleDelta: number;
   velocity: number;
   channel: number;
-  /** True when silent (rest element, velocity 0, or muted line). */
+  /** True when silent (rest, velocity 0, or muted line). */
   silent: boolean;
   rest: boolean;
   muted: boolean;
+  overlap: Overlap;
+  /** Kept for the scheduler's legato handling. */
   legato: boolean;
+  /** One read per kind. `time` is this note's own Time value (the wait before it). */
   reads: Record<Kind, HeadRead>;
+  /** The following Time value: sets the gap after this note and its length. */
+  nextTime: HeadRead;
 }
 
 export interface LineRuntime {
@@ -53,17 +74,39 @@ export interface LineRuntime {
   /** Number of notes assembled since Start (for display). */
   count: number;
   last: NoteEvent | null;
+  /** The Time value already read for the next note, if any. */
+  pending: Read | null;
 }
 
 export type EngineListener = (e: EngineChange) => void;
 export type EngineChange =
-  | { type: 'cell'; series: string; index: number }
+  | { type: 'cell'; pos: Pos }
   | { type: 'line'; line: number }
-  | { type: 'reset' };
+  | { type: 'reset' }
+  | { type: 'restore' };
+
+/** Everything Restore Last Start puts back. */
+export interface StartState {
+  tempo: number;
+  columns: Column[];
+  lines: LineConfig[];
+  random: Record<Kind, RandomSettings>;
+  minTime: number;
+  pitchLimit: number;
+  scale: GlobalScale;
+}
 
 export function cloneProject(p: Project): Project {
   return JSON.parse(JSON.stringify(p)) as Project;
 }
+
+const clone = <T>(x: T): T => JSON.parse(JSON.stringify(x)) as T;
+
+function toHeadRead(r: Read, held = false): HeadRead {
+  return { pos: r.pos, value: r.value, rest: r.rest, randomised: r.randomised, held };
+}
+
+const HELD: HeadRead = { pos: null, value: null, rest: null, randomised: false, held: true };
 
 export class Engine {
   project: Project;
@@ -71,10 +114,15 @@ export class Engine {
   rng: Rng;
   /** Ticks up to which notes have been assembled. */
   horizon = 0;
+  readonly choices: EngineChoices;
   private listeners = new Set<EngineListener>();
+  private ranges = new Map<string, { lo: number; hi: number }>();
+  private startState: StartState | null = null;
+  private undoState: StartState | null = null;
 
-  constructor(project: Project) {
+  constructor(project: Project, choices: Partial<EngineChoices> = {}) {
     this.project = project;
+    this.choices = { ...DEFAULT_CHOICES, ...choices };
     this.rng = new Rng(project.seed);
     this.reset();
   }
@@ -88,43 +136,72 @@ export class Engine {
     for (const fn of this.listeners) fn(e);
   }
 
-  series(id: string): Series | undefined {
-    return this.project.series.find((s) => s.id === id);
+  get score(): Score {
+    return new Score(this.project.columns);
+  }
+
+  column(id: string): Column | undefined {
+    return this.project.columns.find((c) => c.id === id);
   }
 
   /** Replace the whole project (load). Resets runtime state. */
   load(project: Project): void {
     this.project = project;
+    this.startState = null;
+    this.undoState = null;
     this.reset();
   }
 
   /**
-   * Return to the defined beginning: heads to their start cells and
-   * directions, loop counters cleared, random generator reseeded, each line
-   * waiting for its delay. Line pauses are released.
+   * Return to the defined beginning: heads to their start elements and
+   * directions, loop counters cleared, random generator reseeded, Pit series
+   * ranges taken (for Pitch Limit), each line waiting for its delay.
    */
   reset(): void {
     this.rng = new Rng(this.project.seed);
     this.horizon = 0;
+    this.ranges = pitchRanges(this.score);
     this.lines = [];
-    for (let i = 0; i < LINE_COUNT; i++) {
-      this.lines.push(this.freshLine(i));
-    }
+    for (let i = 0; i < LINE_COUNT; i++) this.lines.push(this.freshLine(i, 0));
     this.emit({ type: 'reset' });
   }
 
-  private freshLine(i: number): LineRuntime {
+  private freshLine(i: number, at: number, withDelay = true): LineRuntime {
     const cfg = this.project.lines[i]!;
     const heads = {} as Record<Kind, HeadState>;
     for (const k of KINDS) {
       const h = cfg.heads[k];
-      heads[k] = newHead(k, h.series, h.start, h.startDir);
+      heads[k] = newHead(k, h.col, h.start, h.startDir);
     }
-    return { heads, nextTick: Math.max(0, cfg.delay), paused: false, remaining: 0, count: 0, last: null };
+    const rt: LineRuntime = { heads, nextTick: at + (withDelay ? Math.max(0, cfg.delay) : 0), paused: false, remaining: 0, count: 0, last: null, pending: null };
+    if (this.choices.firstNoteWaits) {
+      rt.pending = readHead(heads.time, this.ctx());
+      rt.nextTick += this.gap(cfg, rt.pending);
+    }
+    return rt;
   }
 
   cfg(line: number): LineConfig {
     return this.project.lines[line]!;
+  }
+
+  ctx(): ReadContext {
+    const score = this.score;
+    return {
+      score,
+      rng: this.rng,
+      choices: this.choices,
+      random: this.project.random,
+      minTime: this.project.minTime,
+      pitchLimit: this.project.pitchLimit,
+      pitchRange: (p) => this.ranges.get(seriesKey(score, p)) ?? null,
+      onChange: (pos) => this.emit({ type: 'cell', pos }),
+    };
+  }
+
+  private gap(cfg: LineConfig, t: Read | null): number {
+    const v = t && t.value !== null ? t.value : 24;
+    return Math.max(0.05, v * Math.max(0.01, cfg.timeScale));
   }
 
   /**
@@ -150,49 +227,56 @@ export class Engine {
     return out;
   }
 
-  /** Read one value from each head of a line and build the note. */
+  /** Build the line's next note at `tick`. */
   private assemble(line: number, tick: number): NoteEvent {
     const cfg = this.cfg(line);
     const rt = this.lines[line]!;
-    const ctx = {
-      bank: this.project.series,
-      rng: this.rng,
-      onCellChanged: (series: string, index: number) => this.emit({ type: 'cell', series, index }),
-    };
-    const reads = {} as Record<Kind, HeadRead>;
-    for (const k of KINDS) {
-      const r = readHead(rt.heads[k], ctx);
-      reads[k] = {
-        series: r.series,
-        index: r.index,
-        value: r.value,
-        rest: r.rest,
-        randomised: !r.rest && r.randomised,
-      };
+    const ctx = this.ctx();
+    // This note's own Time value: read with the previous note, or now.
+    const own = rt.pending ?? readHead(rt.heads.time, ctx);
+    rt.pending = null;
+    // Find the rests before moving any head: a Rest holds the other heads.
+    const others = ['pitch', 'velocity', 'artic'] as const;
+    const peeks = {} as Record<(typeof others)[number], Read>;
+    for (const k of others) peeks[k] = peekHead(rt.heads[k], ctx);
+    const marks = [own.rest, ...others.map((k) => peeks[k].rest)];
+    const allAdvance = marks.includes('r') || !marks.includes('R');
+    const reads = { time: toHeadRead(own) } as Record<Kind, HeadRead>;
+    for (const k of others) {
+      if (allAdvance || peeks[k].rest === 'R') reads[k] = toHeadRead(readHead(rt.heads[k], ctx));
+      else reads[k] = HELD;
     }
-    const timeValue = reads.time.value ?? 24;
-    const time = Math.max(0.05, timeValue * Math.max(0.01, cfg.timeScale));
-    const artic = reads.artic.value ?? 100;
-    const duration = Math.max(0.05, (time * artic) / 100);
-    let pitch = (reads.pitch.value ?? 60) + cfg.transpose;
-    while (pitch > 127) pitch -= 12;
-    while (pitch < 0) pitch += 12;
+    // The next Time value: the gap after this note and the basis of its length.
+    const next = readHead(rt.heads.time, ctx);
+    rt.pending = next;
+    const time = this.gap(cfg, next);
+    const sl = reads.artic.value ?? 16;
+    const duration = Math.max(0.05, (time * sl) / 16);
+
+    let prePitch = (reads.pitch.value ?? 60) + cfg.transpose;
+    while (prePitch > 127) prePitch -= 12;
+    while (prePitch < 0) prePitch += 12;
+    const scaled = constrain(prePitch, effectiveScale(this.project.scale, cfg));
     const velocity = Math.min(127, Math.max(0, (reads.velocity.value ?? 0) + cfg.velOffset));
-    const rest = reads.time.rest || reads.pitch.rest || reads.velocity.rest || reads.artic.rest;
+    const rest = marks.some((m) => m !== null);
     const silent = rest || velocity === 0 || cfg.mute;
     const ev: NoteEvent = {
       line,
       tick,
       time,
       duration,
-      pitch,
+      pitch: scaled.pitch,
+      prePitch,
+      scaleDelta: scaled.delta,
       velocity: Math.max(1, velocity),
       channel: cfg.channel,
       silent,
       rest,
       muted: cfg.mute,
-      legato: cfg.legato,
+      overlap: cfg.overlap,
+      legato: cfg.overlap === 'legato',
       reads,
+      nextTime: toHeadRead(next),
     };
     rt.nextTick = tick + time;
     rt.count++;
@@ -210,9 +294,9 @@ export class Engine {
     const h = this.lines[line]!.heads[kind];
     if (h.dir === dir) return;
     h.dir = dir;
-    // Step back over the cell just read so that reversing replays from the
-    // current cell outward rather than skipping one.
-    if (h.lastIndex !== null && h.lastSeries === h.series) h.pos = h.lastIndex + dir;
+    // Turn around at the element just read: the next read is its neighbour
+    // in the new direction (a Feelers choice; Fingers does not say).
+    if (h.last) h.pos = step(this.score, h.last, dir);
     this.emit({ type: 'line', line });
   }
 
@@ -226,25 +310,22 @@ export class Engine {
     for (const k of KINDS) this.toggleDirection(line, k);
   }
 
-  /** Point a head at a different series (keeps direction, starts at cell 0 or the end). */
-  setHeadSeries(line: number, kind: Kind, seriesId: string, at?: number): void {
-    const s = this.series(seriesId);
-    if (!s || s.kind !== kind) return;
+  /** Point a head at a column (keeps direction; starts at element `at`, default the top). */
+  setHeadColumn(line: number, kind: Kind, colId: string, at = 0): void {
+    const c = this.column(colId);
+    if (!c || c.kind !== kind) return;
     const h = this.lines[line]!.heads[kind];
-    h.series = seriesId;
-    h.pos = at ?? 0;
+    h.pos = { col: colId, i: at };
     h.loops = {};
-    h.skip = false;
-    this.cfg(line).heads[kind].series = seriesId;
+    this.cfg(line).heads[kind].col = colId;
     this.emit({ type: 'line', line });
   }
 
-  /** Move a head to a cell (manual repositioning). */
+  /** Move a head to an element (manual redirection). */
   setHeadPos(line: number, kind: Kind, index: number): void {
     const h = this.lines[line]!.heads[kind];
-    h.pos = index;
+    h.pos = { col: h.pos.col, i: index };
     h.loops = {};
-    h.skip = false;
     this.emit({ type: 'line', line });
   }
 
@@ -258,11 +339,13 @@ export class Engine {
 
   /** Return one line to its starting state and start it again at `at`. */
   resetLine(line: number, at: number): void {
-    const fresh = this.freshLine(line);
     const old = this.lines[line]!;
+    const fresh = this.freshLine(line, at, false);
     fresh.paused = old.paused;
-    fresh.nextTick = old.paused ? Infinity : at;
-    fresh.remaining = 0;
+    if (old.paused) {
+      fresh.remaining = fresh.nextTick - at;
+      fresh.nextTick = Infinity;
+    }
     this.lines[line] = fresh;
     this.emit({ type: 'line', line });
   }
@@ -310,32 +393,87 @@ export class Engine {
     this.emit({ type: 'line', line });
   }
 
-  /** Set a cell value; with shift-edit the next time value compensates. */
-  setValue(seriesId: string, index: number, value: number, shift = false): void {
-    const s = this.series(seriesId);
-    const c = s?.cells[index];
-    if (!s || !c || c.t !== 'v') return;
-    const old = c.v;
-    c.v = value;
-    this.emit({ type: 'cell', series: seriesId, index });
-    if (shift && s.kind === 'time') {
-      const delta = old - value;
-      for (let i = index + 1; i < s.cells.length; i++) {
-        const n = s.cells[i]!;
-        if (n.t === 'end') break;
-        if (n.t === 'v') {
-          n.v = Math.max(1, n.v + delta);
-          this.emit({ type: 'cell', series: seriesId, index: i });
+  /** Set an element's value; with shift-edit the next Time value of the series compensates. */
+  setValue(p: Pos, value: number, shift = false): void {
+    const c = this.column(p.col);
+    const e = c?.els[p.i];
+    if (!c || !e || e.loop !== undefined) return;
+    const old = e.v;
+    e.v = value;
+    this.emit({ type: 'cell', pos: p });
+    if (shift && c.kind === 'time' && old !== null) {
+      const sc = this.score;
+      let q = rawNext(sc, p);
+      for (let g = 0; q && g < 64 && !samePos(q, p); g++) {
+        const n = sc.el(q);
+        if (n && n.v !== null && n.loop === undefined) {
+          n.v = Math.max(1, n.v + old - value);
+          this.emit({ type: 'cell', pos: q });
           break;
         }
+        q = rawNext(sc, q);
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Restore Last Start (Fingers manual, chapter 5)
+
+  private captureState(): StartState {
+    const p = this.project;
+    return clone({ tempo: p.tempo, columns: p.columns, lines: p.lines, random: p.random, minTime: p.minTime, pitchLimit: p.pitchLimit, scale: p.scale });
+  }
+
+  private applyState(s: StartState): void {
+    const p = this.project;
+    const c = clone(s);
+    p.tempo = c.tempo;
+    p.columns = c.columns;
+    p.lines = c.lines;
+    p.random = c.random;
+    p.minTime = c.minTime;
+    p.pitchLimit = c.pitchLimit;
+    p.scale = c.scale;
+  }
+
+  /** Called when the performance starts: remember everything for Restore Last Start. */
+  captureStart(): void {
+    this.startState = this.captureState();
+    this.undoState = null;
+  }
+
+  get canRestore(): boolean {
+    return this.startState !== null;
+  }
+
+  get restored(): boolean {
+    return this.undoState !== null;
+  }
+
+  /**
+   * Return every series value and line setting to how it was when Start was
+   * last pressed, undoing edits and auto-randomisation. A second call undoes
+   * the restore. Heads keep moving from where they are.
+   */
+  toggleRestore(): 'restored' | 'undone' | null {
+    if (!this.startState) return null;
+    let result: 'restored' | 'undone';
+    if (this.undoState) {
+      this.applyState(this.undoState);
+      this.undoState = null;
+      result = 'undone';
+    } else {
+      this.undoState = this.captureState();
+      this.applyState(this.startState);
+      result = 'restored';
+    }
+    this.emit({ type: 'restore' });
+    return result;
   }
 }
 
 // -------------------------------------------------------------------------
 // Snapshots (performance memories)
-
 
 /** Capture the live performance state of all lines. */
 export function takeSnapshot(e: Engine, tempo: number): Snapshot {
@@ -346,18 +484,11 @@ export function takeSnapshot(e: Engine, tempo: number): Snapshot {
       const heads = {} as Snapshot['lines'][number]['heads'];
       for (const k of KINDS) {
         const h = rt.heads[k];
-        // Store the cell last read, so recall replays from that note.
-        const pos = h.lastIndex !== null && h.lastSeries === h.series ? h.lastIndex : h.pos;
-        heads[k] = { series: h.series, pos, dir: h.dir };
+        // Store the element of the note last assembled, so recall replays from it.
+        const at = (k === 'time' ? rt.last?.reads.time.pos : h.last) ?? h.pos;
+        heads[k] = { col: at.col, pos: at.i, dir: h.dir };
       }
-      return {
-        heads,
-        paused: rt.paused,
-        mute: cfg.mute,
-        transpose: cfg.transpose,
-        velOffset: cfg.velOffset,
-        timeScale: cfg.timeScale,
-      };
+      return { heads, paused: rt.paused, mute: cfg.mute, transpose: cfg.transpose, velOffset: cfg.velOffset, timeScale: cfg.timeScale };
     }),
   };
 }
@@ -374,15 +505,18 @@ export function recallSnapshot(e: Engine, snap: Snapshot, at: number): void {
     const rt = e.lines[i]!;
     for (const k of KINDS) {
       const s = sl.heads[k];
-      if (!e.series(s.series) || e.series(s.series)!.kind !== k) continue;
+      const c = e.column(s.col);
+      if (!c || c.kind !== k) continue;
       const h = rt.heads[k];
-      h.series = s.series;
-      h.pos = s.pos;
+      h.pos = { col: s.col, i: s.pos };
       h.dir = s.dir;
       h.loops = {};
-      h.skip = false;
-      cfg.heads[k].series = s.series;
+      h.last = null;
+      cfg.heads[k].col = s.col;
     }
+    rt.pending = null;
     e.setPaused(i, sl.paused, at);
   });
 }
+
+export { NOTHING };

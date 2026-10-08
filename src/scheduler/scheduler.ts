@@ -232,6 +232,7 @@ export class Scheduler {
     if (this.external) return;
     if (this.state !== 'stopped') this.stop();
     this.engine.reset();
+    this.engine.captureStart();
     this.pending = [];
     this.lineHeld = [null, null, null, null];
     this.anchorTick = 0;
@@ -363,13 +364,25 @@ export class Scheduler {
   }
 
   /**
-   * Monophonic handling: a line holds at most one note. A new note cuts the
-   * previous one at its onset (strict), or just after its onset (legato), so
-   * mono synths can glide. Re-striking the same pitch always cuts first.
-   * Silent events (rests) leave a sounding note to finish naturally.
+   * Overlap handling per line. MONO: a line holds at most one note; a new
+   * note cuts the previous one at its onset. LEGATO: the previous note is cut
+   * just after the new onset, so mono synths can glide. WRITTEN (Fingers):
+   * every note keeps its computed length, so S/L of 16 and above overlap.
+   * In every mode a repeated pitch is released before it is struck again.
+   * Silent events (rests) leave sounding notes to finish naturally.
    */
   private handleNote(ev: NoteEvent): void {
     const ms = this.tickToMs(ev.tick);
+    if (ev.overlap === 'written') {
+      if (!ev.silent) {
+        for (const p of this.pending.filter((x) => x.line === ev.line && x.channel === ev.channel && x.pitch === ev.pitch)) {
+          this.removePending(p);
+          this.out.noteOff(p.channel, p.pitch, p.id, ms);
+        }
+      }
+      this.sound(ev, ms);
+      return;
+    }
     const held = this.lineHeld[ev.line];
     let legatoRelease: PendingOff | null = null;
     if (held && !ev.silent) {
@@ -379,6 +392,12 @@ export class Scheduler {
       if (ev.legato && !same) legatoRelease = held;
       else this.out.noteOff(held.channel, held.pitch, held.id, ms);
     }
+    this.sound(ev, ms);
+    if (legatoRelease) this.out.noteOff(legatoRelease.channel, legatoRelease.pitch, legatoRelease.id, ms);
+  }
+
+  /** Send the note-on, queue its note-off and report it. */
+  private sound(ev: NoteEvent, ms: number): void {
     const offTick = ev.tick + ev.duration;
     if (!ev.silent) {
       const id = this.out.noteOn(ev.channel, ev.pitch, ev.velocity, ms);
@@ -386,7 +405,6 @@ export class Scheduler {
       this.insertPending(p);
       this.lineHeld[ev.line] = p;
     }
-    if (legatoRelease) this.out.noteOff(legatoRelease.channel, legatoRelease.pitch, legatoRelease.id, ms);
     this.emit({ type: 'note', note: ev, ms, offMs: this.tickToMs(offTick) });
   }
 
@@ -421,13 +439,15 @@ export class Scheduler {
     if (l && l.program !== null) this.out.send(programChange(l.channel, l.program), this.now());
   }
 
-  /** Release a line's sounding note now (used when muting). */
+  /** Release a line's sounding notes now (used when muting, pausing a line or changing its channel). */
   releaseLine(line: number): void {
-    const held = this.lineHeld[line];
-    if (!held) return;
-    this.removePending(held);
+    const mine = this.pending.filter((p) => p.line === line);
     this.lineHeld[line] = null;
-    this.out.noteOff(held.channel, held.pitch, held.id, Math.max(this.now(), this.state === 'playing' ? this.tickToMs(this.engine.horizon) : 0));
+    const t = Math.max(this.now(), this.state === 'playing' ? this.tickToMs(this.engine.horizon) : 0);
+    for (const p of mine) {
+      this.removePending(p);
+      this.out.noteOff(p.channel, p.pitch, p.id, t);
+    }
   }
 
   dispose(): void {
@@ -515,6 +535,7 @@ export class Scheduler {
     this.emit({ type: 'realtime', message: 'Start', t });
     if (this.state !== 'stopped') this.out.releaseAll(true);
     this.engine.reset();
+    this.engine.captureStart();
     this.pending = [];
     this.lineHeld = [null, null, null, null];
     this.pauseTick = 0;

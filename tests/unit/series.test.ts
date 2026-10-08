@@ -1,179 +1,320 @@
+/**
+ * Series traversal and randomisation, against the Fingers manual (chapter 3
+ * "Series and Columns", "Series Control Elements"; chapter 6 "Randomization").
+ * Rules the manual leaves open are marked CHOICE and documented in
+ * docs/UNCERTAINTIES.md.
+ */
 import { describe, expect, it } from 'vitest';
-import { makeSeries } from '../../src/engine/factory';
+import { makeColumn } from '../../src/engine/factory';
 import { Rng } from '../../src/engine/rng';
-import { cycleLength, newHead, readHead } from '../../src/engine/series';
-import type { Direction, Kind, Series } from '../../src/engine/types';
+import { GAUSS_SCALE, Score, cycleLength, newHead, pitchRanges, readHead, seriesKey, type ReadContext } from '../../src/engine/series';
+import type { Column, Direction, RandomSettings } from '../../src/engine/types';
 
-function walk(bank: Series[], id: string, n: number, dir: Direction = 1, start = 0, kind?: Kind): (number | '_')[] {
-  const s = bank.find((x) => x.id === id)!;
-  const head = newHead(kind ?? s.kind, id, start, dir);
-  const rng = new Rng(1);
-  const out: (number | '_')[] = [];
+const V = (n: number, src: string, opts: Partial<Column> = {}) => makeColumn('velocity', n, src, opts);
+
+function walk(cols: Column[], id: string, n: number, dir: Direction = 1, start = 0, extra: Partial<ReadContext> = {}): (number | string)[] {
+  const c = cols.find((x) => x.id === id)!;
+  const head = newHead(c.kind, id, start, dir);
+  const score = new Score(cols);
+  const out: (number | string)[] = [];
   for (let i = 0; i < n; i++) {
-    const r = readHead(head, { bank, rng });
-    out.push(r.rest ? '_' : r.value);
+    const r = readHead(head, { score, ...extra });
+    out.push(r.pos === null ? '∅' : r.rest ? `${r.value ?? '_'}${r.rest}` : (r.value as number));
   }
   return out;
 }
 
-describe('series traversal', () => {
+describe('columns and series', () => {
   it('walks forward and wraps', () => {
-    const bank = [makeSeries('velocity', 1, '10 20 30')];
-    expect(walk(bank, 'V1', 7)).toEqual([10, 20, 30, 10, 20, 30, 10]);
+    expect(walk([V(1, '10 20 30')], 'V1', 7)).toEqual([10, 20, 30, 10, 20, 30, 10]);
   });
 
   it('walks in reverse and wraps', () => {
-    const bank = [makeSeries('velocity', 1, '10 20 30')];
-    expect(walk(bank, 'V1', 5, -1, 2)).toEqual([30, 20, 10, 30, 20]);
+    expect(walk([V(1, '10 20 30')], 'V1', 5, -1, 2)).toEqual([30, 20, 10, 30, 20]);
   });
 
-  it('honours a starting position', () => {
-    const bank = [makeSeries('velocity', 1, '10 20 30 40')];
-    expect(walk(bank, 'V1', 4, 1, 2)).toEqual([30, 40, 10, 20]);
+  it('honours a starting element', () => {
+    expect(walk([V(1, '10 20 30 40')], 'V1', 4, 1, 2)).toEqual([30, 40, 10, 20]);
   });
 
-  it('END makes later cells dormant', () => {
-    const bank = [makeSeries('velocity', 1, '10 20 | 99 98')];
-    expect(walk(bank, 'V1', 5)).toEqual([10, 20, 10, 20, 10]);
-    expect(walk(bank, 'V1', 4, -1, 1)).toEqual([20, 10, 20, 10]);
+  it('End of Series splits a column into separate, usable series', () => {
+    const cols = [V(1, '10 20| 30 40 50')];
+    expect(walk(cols, 'V1', 5)).toEqual([10, 20, 10, 20, 10]);
+    expect(walk(cols, 'V1', 5, 1, 2)).toEqual([30, 40, 50, 30, 40]);
+    expect(walk(cols, 'V1', 4, -1, 1)).toEqual([20, 10, 20, 10]);
+    expect(walk(cols, 'V1', 4, -1, 2)).toEqual([30, 50, 40, 30]);
   });
 
-  it('SKIP hops over the next value', () => {
-    const bank = [makeSeries('velocity', 1, '10 > 20 30')];
-    expect(walk(bank, 'V1', 4)).toEqual([10, 30, 10, 30]);
+  it('Column Link makes linked columns one continuous series', () => {
+    const cols = [V(1, '1 2 +'), V(2, '3 4')];
+    expect(walk(cols, 'V1', 7)).toEqual([1, 2, 3, 4, 1, 2, 3]);
+    // A head starting in the second column belongs to the same series.
+    expect(walk(cols, 'V2', 4)).toEqual([3, 4, 1, 2]);
   });
 
-  it('SKIP works in the direction of travel', () => {
-    const bank = [makeSeries('velocity', 1, '10 20 > 30')];
-    // reverse from the end: 30, then skip flag hit, so 20 is jumped -> 10
-    expect(walk(bank, 'V1', 4, -1, 3)).toEqual([30, 10, 30, 10]);
+  it('Column Link goes to the next column of the same kind, even if not adjacent', () => {
+    const cols = [V(1, '1 2 +'), makeColumn('pitch', 1, 'C4'), V(2, '3')];
+    expect(walk(cols, 'V1', 4)).toEqual([1, 2, 3, 1]);
   });
 
-  it('loops play the section n times in total', () => {
-    const bank = [makeSeries('velocity', 1, '1 [ 2 3 ]3 4')];
-    expect(walk(bank, 'V1', 9)).toEqual([1, 2, 3, 2, 3, 2, 3, 4, 1]);
+  it('a link from the rightmost column wraps to the leftmost', () => {
+    const cols = [V(1, '1 2'), V(2, '3 4 +')];
+    expect(walk(cols, 'V2', 6)).toEqual([3, 4, 1, 2, 3, 4]);
   });
 
-  it('nested loops', () => {
-    const bank = [makeSeries('velocity', 1, '[ 1 [ 2 ]2 ]2 3')];
-    expect(walk(bank, 'V1', 7)).toEqual([1, 2, 2, 1, 2, 2, 3]);
+  it('Link joins the bottom series of a column to the top series of the next', () => {
+    const cols = [V(1, '1 2| 3 +'), V(2, '4 5| 6')];
+    expect(walk(cols, 'V1', 4)).toEqual([1, 2, 1, 2]);
+    expect(walk(cols, 'V1', 6, 1, 2)).toEqual([3, 4, 5, 3, 4, 5]);
+    expect(walk(cols, 'V2', 3, 1, 2)).toEqual([6, 6, 6]);
   });
 
-  it('loops work in reverse', () => {
-    const bank = [makeSeries('velocity', 1, '1 [ 2 3 ]2 4')];
-    expect(walk(bank, 'V1', 7, -1, 6)).toEqual([4, 3, 2, 3, 2, 1, 4]);
+  it('a ring of linked columns never wraps', () => {
+    expect(walk([V(1, '1 +'), V(2, '2 +')], 'V1', 5)).toEqual([1, 2, 1, 2, 1]);
   });
 
-  it('REST in a pitch series silences that note', () => {
-    const bank = [makeSeries('pitch', 1, '60 _ 62')];
-    expect(walk(bank, 'P1', 4)).toEqual([60, '_', 62, 60]);
+  it('heads moving backward cross links too', () => {
+    const cols = [V(1, '1 2 +'), V(2, '3 4')];
+    expect(walk(cols, 'V2', 6, -1, 1)).toEqual([4, 3, 2, 1, 4, 3]);
   });
 
-  it('REST in a time series marks the next time value as silent', () => {
-    const bank = [makeSeries('time', 1, '6 _ 12 6')];
-    const s = bank[0]!;
-    const head = newHead('time', s.id, 0, 1);
-    const rng = new Rng(1);
-    const r1 = readHead(head, { bank, rng });
-    const r2 = readHead(head, { bank, rng });
-    const r3 = readHead(head, { bank, rng });
-    expect([r1.rest, r1.value]).toEqual([false, 6]);
-    expect([r2.rest, r2.value]).toEqual([true, 12]);
-    expect([r3.rest, r3.value]).toEqual([false, 6]);
+  it('blank elements are passed over (CHOICE)', () => {
+    expect(walk([V(1, '1 _ 2')], 'V1', 4)).toEqual([1, 2, 1, 2]);
   });
 
-  it('LINK continues into the next series of the same kind', () => {
-    const bank = [
-      makeSeries('velocity', 1, '1 2 +'),
-      makeSeries('pitch', 1, '60'),
-      makeSeries('velocity', 2, '3 4'),
-    ];
-    // V1 -> V2, and V2 wraps on itself
-    expect(walk(bank, 'V1', 7)).toEqual([1, 2, 3, 4, 3, 4, 3]);
-  });
-
-  it('LINK chains can cycle', () => {
-    const bank = [makeSeries('velocity', 1, '1 +'), makeSeries('velocity', 2, '2 +')];
-    expect(walk(bank, 'V1', 5)).toEqual([1, 2, 1, 2, 1]);
-  });
-
-  it('reversing past the start of a linked series re-enters its predecessor', () => {
-    const bank = [makeSeries('velocity', 1, '1 2 +'), makeSeries('velocity', 2, '3 4')];
-    expect(walk(bank, 'V2', 5, -1, 1)).toEqual([4, 3, 2, 1, 2]);
-  });
-
-  it('applies limits to read values', () => {
-    const bank = [makeSeries('pitch', 1, '40 60 90', { lo: 48, hi: 72 })];
-    expect(walk(bank, 'P1', 3)).toEqual([48, 60, 72]);
-  });
-
-  it('survives degenerate series', () => {
-    const bank = [makeSeries('pitch', 1, '[ ]999 >'), makeSeries('pitch', 2, '|')];
-    expect(walk(bank, 'P1', 2)).toEqual(['_', '_']);
-    expect(walk(bank, 'P2', 2)).toEqual(['_', '_']);
+  it('an empty linked column is passed through', () => {
+    const cols = [V(1, '1 +'), V(2, '', { link: true }), V(3, '3')];
+    expect(walk(cols, 'V1', 4)).toEqual([1, 3, 1, 3]);
   });
 });
 
-describe('randomisation', () => {
-  it('wobble displaces reads but keeps the stored value', () => {
-    const s = makeSeries('pitch', 1, '60?', { rand: { amount: 2, type: 3, prob: 100 } });
-    const bank = [s];
-    const head = newHead('pitch', 'P1', 0, 1);
-    const rng = new Rng(42);
-    const seen = new Set<number>();
-    for (let i = 0; i < 200; i++) {
-      const r = readHead(head, { bank, rng });
-      if (!r.rest) seen.add(r.value - 60);
-    }
-    expect([...seen].every((d) => [-6, -4, -2, 2, 4, 6].includes(d))).toBe(true);
-    expect(seen.size).toBeGreaterThan(3);
-    expect(s.cells[0]).toEqual({ t: 'v', v: 60, r: 1 });
+describe('Skip', () => {
+  it('skips its own element, in both directions, and keeps the value', () => {
+    const cols = [V(1, '10 20S 30')];
+    expect(walk(cols, 'V1', 4)).toEqual([10, 30, 10, 30]);
+    expect(walk(cols, 'V1', 4, -1, 2)).toEqual([30, 10, 30, 10]);
+    expect(cols[0]!.els[1]).toEqual({ v: 20, skip: true });
+    delete cols[0]!.els[1]!.skip;
+    expect(walk(cols, 'V1', 3)).toEqual([10, 20, 30]);
   });
 
-  it('drift writes the displacement back (random walk within limits)', () => {
-    const s = makeSeries('pitch', 1, '60~', { rand: { amount: 1, type: 1, prob: 100 }, lo: 55, hi: 65 });
-    const bank = [s];
-    const head = newHead('pitch', 'P1', 0, 1);
-    const rng = new Rng(7);
-    let prev = 60;
-    for (let i = 0; i < 300; i++) {
-      const r = readHead(head, { bank, rng });
-      const v = (s.cells[0] as { v: number }).v;
-      // one step each read, unless clamped at a limit
-      if (v === prev) expect([55, 65]).toContain(v);
-      else expect(Math.abs(v - prev)).toBe(1);
-      expect(v).toBeGreaterThanOrEqual(55);
-      expect(v).toBeLessThanOrEqual(65);
-      expect(r.rest ? null : r.value).toBe(v);
-      prev = v;
-    }
+  it('overrides a Loop and a rest on the same element', () => {
+    expect(walk([V(1, '1 2 L2S 3')], 'V1', 6)).toEqual([1, 2, 3, 1, 2, 3]);
+    expect(walk([V(1, '1 2RS 3')], 'V1', 4)).toEqual([1, 3, 1, 3]);
   });
 
-  it('gaussian type produces mostly small displacements', () => {
-    const s = makeSeries('velocity', 1, '64?', { rand: { amount: 4, type: 0, prob: 100 } });
-    const head = newHead('velocity', 'V1', 0, 1);
-    const rng = new Rng(3);
-    let within = 0;
-    const N = 2000;
-    for (let i = 0; i < N; i++) {
-      const r = readHead(head, { bank: [s], rng });
-      if (!r.rest && Math.abs(r.value - 64) <= 4) within++;
-    }
-    // ~68% within one standard deviation (plus rounding)
-    expect(within / N).toBeGreaterThan(0.6);
-    expect(within / N).toBeLessThan(0.85);
+  it('beside End: the element is skipped but the series still ends there', () => {
+    const cols = [V(1, '1 2S| 3')];
+    expect(walk(cols, 'V1', 3)).toEqual([1, 1, 1]);
+    expect(walk(cols, 'V1', 3, 1, 2)).toEqual([3, 3, 3]);
   });
 
-  it('probability zero never randomises', () => {
-    const s = makeSeries('velocity', 1, '64?', { rand: { amount: 10, type: 0, prob: 0 } });
-    expect(walk([s], 'V1', 50).every((v) => v === 64)).toBe(true);
+  it('a series of nothing but skipped elements yields nothing', () => {
+    expect(walk([V(1, '1S 2S')], 'V1', 2)).toEqual(['∅', '∅']);
+  });
+});
+
+describe('Loop', () => {
+  it('repeats from the start of the series; count n repeats n more times (CHOICE)', () => {
+    expect(walk([V(1, '1 2 L2 3')], 'V1', 8)).toEqual([1, 2, 1, 2, 1, 2, 3, 1]);
+  });
+
+  it('count as total passes (the alternative reading)', () => {
+    const choices = { firstNoteWaits: false, loopCount: 'passes' as const };
+    expect(walk([V(1, '1 2 L2 3')], 'V1', 6, 1, 0, { choices })).toEqual([1, 2, 1, 2, 3, 1]);
+  });
+
+  it('starts again after its loop is done', () => {
+    expect(walk([V(1, '1 L1 2')], 'V1', 6)).toEqual([1, 1, 2, 1, 1, 2]);
+  });
+
+  it('the top of a loop is the previous Loop in the series', () => {
+    expect(walk([V(1, '1 L1 2 3 L2 4')], 'V1', 9)).toEqual([1, 1, 2, 3, 2, 3, 2, 3, 4]);
+  });
+
+  it('count 0 loops forever', () => {
+    expect(walk([V(1, '1 2 L0 3')], 'V1', 9)).toEqual([1, 2, 1, 2, 1, 2, 1, 2, 1]);
+  });
+
+  it('is ignored by heads moving backward', () => {
+    expect(walk([V(1, '1 2 L2 3')], 'V1', 6, -1, 3)).toEqual([3, 2, 1, 3, 2, 1]);
+  });
+
+  it('occupies an element slot', () => {
+    const c = V(1, '1 L1 2');
+    expect(c.els).toHaveLength(3);
+    expect(c.els[1]).toEqual({ v: null, loop: 1 });
+  });
+
+  it('the series start may lie in a linked column', () => {
+    const cols = [V(1, '1 2 +'), V(2, '3 L1 4')];
+    expect(walk(cols, 'V1', 8)).toEqual([1, 2, 3, 1, 2, 3, 4, 1]);
+  });
+
+  it('a degenerate loop of nothing yields nothing rather than hanging', () => {
+    expect(walk([V(1, 'L0')], 'V1', 2)).toEqual(['∅', '∅']);
+  });
+});
+
+describe('rests', () => {
+  it('are reported with their mark; the head moves on', () => {
+    expect(walk([V(1, '60 62R 64r _r')], 'V1', 5)).toEqual([60, '62R', '64r', '_r', 60]);
   });
 });
 
 describe('cycle length', () => {
-  it('counts value steps including loops and skips', () => {
-    expect(cycleLength(makeSeries('pitch', 1, 'C4 D4 E4'))).toBe(3);
-    expect(cycleLength(makeSeries('pitch', 1, 'C4 [ D4 ]3 E4'))).toBe(5);
-    expect(cycleLength(makeSeries('pitch', 1, 'C4 > D4 E4 | F4'))).toBe(2);
+  it('counts reads including loops and skips', () => {
+    const sc = new Score([makeColumn('pitch', 1, 'C4 D4 E4'), makeColumn('pitch', 2, 'C4 L2 E4'), makeColumn('pitch', 3, 'C4 D4S E4| F4')]);
+    expect(cycleLength(sc, 'P1')).toBe(3);
+    expect(cycleLength(sc, 'P2')).toBe(4);
+    expect(cycleLength(sc, 'P3')).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+const settings = (over: Partial<RandomSettings>): RandomSettings => ({ amount: 2, type: 0, p1: 0, p2: 0, pw: 0, ...over });
+
+function randCtx(cols: Column[], _kind: 'pitch' | 'time' | 'velocity', set: RandomSettings, seed = 1, extra: Partial<ReadContext> = {}): ReadContext {
+  const random = { time: set, pitch: set, velocity: set, artic: set };
+  return { score: new Score(cols), rng: new Rng(seed), random, minTime: 1, pitchLimit: 127, ...extra };
+}
+
+describe('auto-randomisation (Fingers ? and ¿)', () => {
+  it('? changes the stored value (the change is kept)', () => {
+    const c = makeColumn('pitch', 1, 'C4?');
+    const ctx = randCtx([c], 'pitch', settings({ amount: 1, type: 1, p1: 100 }));
+    const head = newHead('pitch', 'P1', 0, 1);
+    let prev = 60;
+    for (let i = 0; i < 50; i++) {
+      const r = readHead(head, ctx);
+      expect(Math.abs((r.value as number) - prev)).toBe(1);
+      expect(c.els[0]!.v).toBe(r.value);
+      prev = r.value as number;
+    }
+  });
+
+  it('? and ¿ differ only in which probability they use', () => {
+    const run = (src: string, p1: number, p2: number) => {
+      const c = makeColumn('pitch', 1, src);
+      const ctx = randCtx([c], 'pitch', settings({ amount: 3, type: 1, p1, p2 }));
+      const head = newHead('pitch', 'P1', 0, 1);
+      for (let i = 0; i < 40; i++) readHead(head, ctx);
+      return c.els[0]!.v;
+    };
+    // Each symbol ignores the other's probability.
+    expect(run('C4?', 0, 100)).toBe(60);
+    expect(run('C4??', 100, 0)).toBe(60);
+    // Both persist when their probability fires.
+    const a = makeColumn('pitch', 1, 'C4?');
+    const b = makeColumn('pitch', 1, 'C4??');
+    readHead(newHead('pitch', 'P1', 0, 1), randCtx([a], 'pitch', settings({ amount: 3, type: 1, p1: 100 })));
+    readHead(newHead('pitch', 'P1', 0, 1), randCtx([b], 'pitch', settings({ amount: 3, type: 1, p2: 100 })));
+    expect(a.els[0]!.v).not.toBe(60);
+    expect(b.els[0]!.v).not.toBe(60);
+  });
+
+  it('probability 33 randomises about one read in three', () => {
+    const c = makeColumn('velocity', 1, '64?');
+    const ctx = randCtx([c], 'velocity', settings({ amount: 4, type: 1, p1: 33 }));
+    const head = newHead('velocity', 'V1', 0, 1);
+    let changed = 0;
+    for (let i = 0; i < 3000; i++) if (readHead(head, ctx).randomised) changed++;
+    expect(changed / 3000).toBeGreaterThan(0.29);
+    expect(changed / 3000).toBeLessThan(0.37);
+  });
+
+  it('Type n: changes are +/- Amount times 1..n, equally likely', () => {
+    const c = makeColumn('velocity', 1, '64~');
+    const ctx = randCtx([c], 'velocity', settings({ amount: 3, type: 2, pw: 100 }));
+    const head = newHead('velocity', 'V1', 0, 1);
+    const seen = new Map<number, number>();
+    for (let i = 0; i < 4000; i++) {
+      const d = (readHead(head, ctx).value as number) - 64;
+      seen.set(d, (seen.get(d) ?? 0) + 1);
+    }
+    expect([...seen.keys()].sort((a, b) => a - b)).toEqual([-6, -3, 3, 6]);
+    for (const n of seen.values()) expect(n / 4000).toBeGreaterThan(0.2);
+  });
+
+  it('Type 0: gaussian whose average change is about Amount', () => {
+    const c = makeColumn('velocity', 1, '64~');
+    const ctx = randCtx([c], 'velocity', settings({ amount: 6, type: 0, pw: 100 }));
+    const head = newHead('velocity', 'V1', 0, 1);
+    let sum = 0;
+    const N = 6000;
+    for (let i = 0; i < N; i++) sum += Math.abs((readHead(head, ctx).value as number) - 64);
+    expect(sum / N).toBeGreaterThan(5.4);
+    expect(sum / N).toBeLessThan(6.6);
+    expect(GAUSS_SCALE).toBeCloseTo(1.2533, 3);
+  });
+
+  it('limits apply only to randomised values', () => {
+    // A stored value far outside the series' randomisation range plays as written.
+    const c = makeColumn('pitch', 1, 'C2 C4? C5');
+    const sc = new Score([c]);
+    const ranges = pitchRanges(sc);
+    const ctx = randCtx([c], 'pitch', settings({ amount: 40, type: 1, p1: 100 }), 3, { pitchLimit: 7, pitchRange: (p) => ranges.get(seriesKey(sc, p)) ?? null });
+    const head = newHead('pitch', 'P1', 0, 1);
+    for (let i = 0; i < 60; i++) {
+      const r = readHead(head, ctx);
+      if (r.pos!.i === 0) expect(r.value).toBe(36);
+      if (r.pos!.i === 2) expect(r.value).toBe(72);
+      if (r.pos!.i === 1) {
+        // range C2..C5 (36..72) widened by 7
+        expect(r.value).toBeGreaterThanOrEqual(29);
+        expect(r.value).toBeLessThanOrEqual(79);
+      }
+    }
+  });
+
+  it('Pitch Limit: C4 and C5 with limit 7 stay within F3..G5 (manual example)', () => {
+    const c = makeColumn('pitch', 1, 'C4? C5?');
+    const sc = new Score([c]);
+    const ranges = pitchRanges(sc);
+    const ctx = randCtx([c], 'pitch', settings({ amount: 9, type: 3, p1: 100 }), 9, { pitchLimit: 7, pitchRange: (p) => ranges.get(seriesKey(sc, p)) ?? null });
+    const head = newHead('pitch', 'P1', 0, 1);
+    const seen = new Set<number>();
+    for (let i = 0; i < 400; i++) seen.add(readHead(head, ctx).value as number);
+    expect(Math.min(...seen)).toBe(53);
+    expect(Math.max(...seen)).toBe(79);
+  });
+
+  it('Minimum Time: randomised Time values never fall below it', () => {
+    const c = makeColumn('time', 1, '12?');
+    const ctx = randCtx([c], 'time', settings({ amount: 6, type: 3, p1: 100 }), 4, { minTime: 9 });
+    const head = newHead('time', 'T1', 0, 1);
+    const seen = new Set<number>();
+    for (let i = 0; i < 300; i++) seen.add(readHead(head, ctx).value as number);
+    expect(Math.min(...seen)).toBe(9);
+  });
+
+  it('a column can carry its own settings and bounds (Feelers extension)', () => {
+    const c = makeColumn('velocity', 1, '64?', { rand: { amount: 50, type: 1, p1: 100, p2: 0, pw: 0, lo: 60, hi: 70 } });
+    const ctx = randCtx([c], 'velocity', settings({ p1: 0 }));
+    const head = newHead('velocity', 'V1', 0, 1);
+    const seen = new Set<number>();
+    for (let i = 0; i < 100; i++) seen.add(readHead(head, ctx).value as number);
+    expect([...seen].every((v) => v === 60 || v === 70 || v === 64)).toBe(true);
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  it('probability zero never randomises', () => {
+    const c = makeColumn('velocity', 1, '64? 64?? 64~');
+    const ctx = randCtx([c], 'velocity', settings({ amount: 10 }));
+    const head = newHead('velocity', 'V1', 0, 1);
+    for (let i = 0; i < 60; i++) expect(readHead(head, ctx).value).toBe(64);
+  });
+});
+
+describe('WOBBLE (Feelers extension)', () => {
+  it('displaces the value read but never the stored value', () => {
+    const c = makeColumn('pitch', 1, 'C4~');
+    const ctx = randCtx([c], 'pitch', settings({ amount: 2, type: 3, pw: 100 }), 42);
+    const head = newHead('pitch', 'P1', 0, 1);
+    const seen = new Set<number>();
+    for (let i = 0; i < 200; i++) seen.add((readHead(head, ctx).value as number) - 60);
+    expect([...seen].every((d) => [-6, -4, -2, 2, 4, 6].includes(d))).toBe(true);
+    expect(c.els[0]).toEqual({ v: 60, ar: 3 });
   });
 });
