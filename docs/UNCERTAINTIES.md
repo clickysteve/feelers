@@ -82,8 +82,8 @@ appears. See [RESEARCH.md](RESEARCH.md) for why the evidence base is thin
     semantics are a modern, explicit design in Feelers.
 22. **Sync direction.** "Synchronise with external sequencers or drum
     machines" most likely means following incoming MIDI clock (slave).
-    *Feelers:* sends MIDI clock (master) only; following external clock is
-    future work.
+    *Feelers:* can send MIDI clock (INT) or follow incoming MIDI clock (EXT).
+    Both are modern implementations, not reconstructions.
 23. **"Last nine performances".** Whether these were recordings, parameter
     states or something else is UNKNOWN. *Feelers:* records takes (the notes
     played) and separately offers nine performance memories (states).

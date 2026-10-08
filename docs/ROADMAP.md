@@ -15,11 +15,9 @@ What the first version does not do yet, roughly in order of usefulness.
 
 ## Next development pass (recommended)
 
-3. **External clock in (slave sync).** Fingers documented synchronising to
-   external sequencers. A MIDI input selector and an external-clock ticker
-   (F8 pulses drive ticks; FA / FB / FC drive the transport) would let
-   Feelers follow a hardware sequencer. The engine is already tick-based, so
-   only the scheduler's time source changes.
+3. **External clock in.** Done: SYNC INT / EXT follows 24 PPQN MIDI Clock
+   with Start / Stop / Continue (see ARCHITECTURE, "External clock").
+   Still to verify on real hardware (Squarp Hermod+).
 4. **MIDI CC control of performance parameters** with MIDI learn: transpose,
    time adjust, velocity offset, direction, pause and mute per line, tempo,
    memory recall. Every target is an existing `App` action.

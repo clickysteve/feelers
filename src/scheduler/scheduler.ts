@@ -13,11 +13,20 @@
  *  - pause():   suspend at the end of the current window, keeping all state.
  *  - resume():  carry on from exactly where pause left off.
  *  - stop():    silence immediately, reset to the beginning.
+ *
+ * Clock source. With the INTERNAL source (default) the scheduler owns time as
+ * described above. With the EXTERNAL source an incoming 24 PPQN MIDI Clock
+ * stream owns time instead: pulse n *is* engine tick n (the engine already
+ * counts 24 ticks per quarter note). Each pulse releases exactly the events
+ * whose ticks fall before the next pulse; events between two pulses (from
+ * Time Adjust or articulation) are placed by the measured pulse period. FA /
+ * FB / FC drive the transport. See docs/ARCHITECTURE.md, "External clock".
  */
 import type { Engine, NoteEvent } from '../engine/engine';
 import { PPQ } from '../engine/types';
 import { CLOCK, CONTINUE, START, STOP, programChange, songPosition } from '../midi/messages';
 import type { MidiOutput } from '../midi/output';
+import { PulseEstimator } from './pulses';
 
 export interface Ticker {
   start(fn: () => void, intervalMs: number): void;
@@ -69,10 +78,29 @@ export class WorkerTicker implements Ticker {
 
 export type TransportState = 'stopped' | 'playing' | 'paused';
 
+export type ClockSource = 'internal' | 'external';
+
+/**
+ * External sync status, for display.
+ *  internal  - INTERNAL source selected.
+ *  no-input  - EXTERNAL selected but no MIDI input chosen or available.
+ *  waiting   - no clock arriving, transport not running.
+ *  clock     - clock arriving, transport not running (waiting for Start / Continue).
+ *  running   - transport running and following the clock.
+ *  stopped   - stopped by an incoming Stop (FC); Continue resumes from here.
+ *  lost      - transport running but the clock stopped arriving; notes released, position held.
+ */
+export type SyncStatus = 'internal' | 'no-input' | 'waiting' | 'clock' | 'running' | 'stopped' | 'lost';
+
+/** No pulse for this long while running means the external clock is lost. */
+export const CLOCK_LOSS_MS = 500;
+
 export type SchedulerEvent =
   | { type: 'transport'; state: TransportState }
   | { type: 'note'; note: NoteEvent; ms: number; offMs: number }
-  | { type: 'tempo'; bpm: number };
+  | { type: 'tempo'; bpm: number }
+  | { type: 'sync'; status: SyncStatus }
+  | { type: 'realtime'; message: 'Start' | 'Continue' | 'Stop'; t: number };
 
 interface PendingOff {
   tick: number;
@@ -103,6 +131,29 @@ export class Scheduler {
   private lineHeld: (PendingOff | null)[] = [null, null, null, null];
   private listeners = new Set<(e: SchedulerEvent) => void>();
 
+  /** Where musical time comes from. Change it with setSource(). */
+  source: ClockSource = 'internal';
+  /** Measures the incoming clock (display tempo and between-pulse placement only). */
+  readonly pulses = new PulseEstimator();
+  /** External clock state. */
+  readonly ext = {
+    /** Tick that the next incoming pulse represents. */
+    nextTick: 0,
+    /** Tick and arrival time of the most recent pulse (the external anchor). */
+    anchorTick: 0,
+    anchorMs: 0,
+    lastPulseMs: -Infinity,
+    /** Pulses received since EXTERNAL was selected. */
+    pulseCount: 0,
+    /** Pulses that advanced the engine. */
+    advanced: 0,
+    lost: false,
+    /** Whether a usable MIDI input is attached (set by the app). */
+    inputReady: false,
+    lastTransport: null as null | 'Start' | 'Continue' | 'Stop',
+  };
+  private lastStatus: SyncStatus = 'internal';
+
   constructor(
     public engine: Engine,
     public out: MidiOutput,
@@ -123,20 +174,36 @@ export class Scheduler {
     for (const fn of this.listeners) fn(e);
   }
 
+  get external(): boolean {
+    return this.source === 'external';
+  }
+
+  /**
+   * Milliseconds per tick. INTERNAL: from the tempo. EXTERNAL: the measured
+   * pulse period (falling back to the tempo before two pulses have arrived);
+   * it only ever places events between pulses, never advances time.
+   */
   get msPerTick(): number {
+    if (this.external) {
+      const p = this.pulses.periodMs();
+      if (p !== null && p > 0) return p;
+    }
     return 60000 / (this.bpm * PPQ);
   }
 
   tickToMs(t: number): number {
+    if (this.external) return this.ext.anchorMs + (t - this.ext.anchorTick) * this.msPerTick;
     return this.anchorMs + (t - this.anchorTick) * this.msPerTick;
   }
 
   msToTick(ms: number): number {
+    if (this.external) return this.ext.anchorTick + (ms - this.ext.anchorMs) / this.msPerTick;
     return this.anchorTick + (ms - this.anchorMs) / this.msPerTick;
   }
 
   /** The transport position in ticks as heard now. */
   positionTick(): number {
+    if (this.state === 'playing' && this.external) return Math.max(0, Math.min(this.engine.horizon, this.ext.anchorTick));
     if (this.state === 'playing') return Math.max(0, Math.min(this.engine.horizon, this.msToTick(this.now())));
     if (this.state === 'paused') return this.pauseTick;
     return 0;
@@ -152,11 +219,17 @@ export class Scheduler {
     return 0;
   }
 
-  private get clockOut(): boolean {
-    return this.engine.project.options.clockOut;
+  /**
+   * MIDI Clock output. Always off while following an external clock, so an
+   * incoming clock can never be echoed back to its source (no clock-thru).
+   */
+  get clockOut(): boolean {
+    return this.engine.project.options.clockOut && !this.external;
   }
 
+  /** Start / pause / resume are INTERNAL transport; externally, FA / FC / FB drive it. */
   start(): void {
+    if (this.external) return;
     if (this.state !== 'stopped') this.stop();
     this.engine.reset();
     this.pending = [];
@@ -178,7 +251,7 @@ export class Scheduler {
   }
 
   pause(): void {
-    if (this.state !== 'playing') return;
+    if (this.external || this.state !== 'playing') return;
     this.pauseTick = this.engine.horizon;
     const pms = this.tickToMs(this.pauseTick);
     this.flushPending(this.pauseTick);
@@ -192,7 +265,7 @@ export class Scheduler {
   }
 
   resume(): void {
-    if (this.state !== 'paused') return;
+    if (this.external || this.state !== 'paused') return;
     this.anchorTick = this.pauseTick;
     this.anchorMs = this.now() + this.opts.startLatencyMs;
     if (this.clockOut) this.out.send([CONTINUE], this.anchorMs);
@@ -203,7 +276,8 @@ export class Scheduler {
   }
 
   stop(): void {
-    this.ticker.stop();
+    // Externally the ticker is the clock-loss watchdog and keeps running.
+    if (!this.external) this.ticker.stop();
     this.out.releaseAll(true);
     this.pending = [];
     this.lineHeld = [null, null, null, null];
@@ -214,13 +288,16 @@ export class Scheduler {
     }
     this.state = 'stopped';
     this.pauseTick = 0;
+    this.ext.lost = false;
     this.engine.reset();
     this.emit({ type: 'transport', state: this.state });
+    this.syncChanged();
   }
 
   setTempo(bpm: number): void {
     const b = Math.min(400, Math.max(10, bpm));
-    if (this.state === 'playing') {
+    // Externally the tempo setting is only stored; the clock decides timing.
+    if (this.state === 'playing' && !this.external) {
       const h = this.engine.horizon;
       this.anchorMs = this.tickToMs(h);
       this.anchorTick = h;
@@ -230,11 +307,23 @@ export class Scheduler {
     this.emit({ type: 'tempo', bpm: b });
   }
 
-  /** Called by the ticker. Schedules everything up to now + lookahead. */
+  /**
+   * Called by the ticker. INTERNAL: schedules everything up to now +
+   * lookahead. EXTERNAL: checks for clock loss (pulses do the scheduling).
+   */
   pump(): void {
+    if (this.external) {
+      this.watchdog();
+      return;
+    }
     if (this.state !== 'playing') return;
     const horizonTick = this.msToTick(this.now() + this.opts.lookaheadMs);
     if (horizonTick <= this.engine.horizon) return;
+    this.advance(horizonTick);
+  }
+
+  /** Assemble and dispatch everything before `horizonTick` (both clock sources). */
+  private advance(horizonTick: number): void {
     const notes = this.engine.generate(horizonTick);
     for (const ev of notes) {
       this.flushClock(ev.tick, true);
@@ -343,5 +432,176 @@ export class Scheduler {
 
   dispose(): void {
     this.ticker.stop();
+  }
+
+  // -----------------------------------------------------------------------
+  // External clock
+
+  /**
+   * Select the clock source. Changing source always stops (releasing every
+   * note and returning to the starting state): the two sources disagree
+   * about where "now" is, so carrying a performance across would be a guess.
+   */
+  setSource(source: ClockSource): void {
+    if (source === this.source) return;
+    this.stop();
+    this.ticker.stop();
+    this.source = source;
+    this.pulses.reset();
+    Object.assign(this.ext, { nextTick: 0, anchorTick: 0, anchorMs: this.now(), lastPulseMs: -Infinity, pulseCount: 0, advanced: 0, lost: false, lastTransport: null });
+    if (this.external) this.ticker.start(() => this.pump(), this.opts.intervalMs);
+    this.syncChanged();
+  }
+
+  /** Tell the scheduler whether a MIDI input is attached (for status only). */
+  setInputReady(ready: boolean): void {
+    this.ext.inputReady = ready;
+    this.syncChanged();
+  }
+
+  /**
+   * Feed incoming MIDI bytes (from the selected input). Only the realtime
+   * transport and clock bytes are acted on: F8 Clock, FA Start, FB Continue,
+   * FC Stop. `t` is the message's receive time in ms (performance.now()).
+   */
+  receive(bytes: ArrayLike<number>, t: number): void {
+    if (!this.external) return;
+    const now = this.now();
+    // Trust the device timestamp only if it is plausible.
+    const ts = Number.isFinite(t) && t > 0 && t <= now + 5 && t >= now - 1000 ? t : now;
+    for (let i = 0; i < bytes.length; i++) {
+      switch (bytes[i]) {
+        case CLOCK:
+          this.pulse(ts);
+          break;
+        case START:
+          this.extStart(ts);
+          break;
+        case CONTINUE:
+          this.extContinue(ts);
+          break;
+        case STOP:
+          this.extStop(ts);
+          break;
+      }
+    }
+  }
+
+  /** One F8 pulse: the authoritative advance of musical time by one tick. */
+  private pulse(t: number): void {
+    this.pulses.add(t);
+    this.ext.pulseCount++;
+    this.ext.lastPulseMs = t;
+    if (this.state !== 'playing') {
+      // Clock while stopped never starts Feelers; it only feeds the tempo display.
+      this.syncChanged();
+      return;
+    }
+    const tick = this.ext.nextTick;
+    this.ext.anchorTick = tick;
+    this.ext.anchorMs = t;
+    this.ext.nextTick = tick + 1;
+    this.ext.advanced++;
+    if (this.ext.lost) this.ext.lost = false;
+    // Everything in [tick, tick + 1): integer-tick events land on this pulse,
+    // fractional ones between it and the expected next pulse.
+    this.advance(tick + 1);
+    this.syncChanged();
+  }
+
+  /** FA: a fresh performance from the defined starting state; the next pulse is tick 0. */
+  private extStart(t: number): void {
+    this.ext.lastTransport = 'Start';
+    this.emit({ type: 'realtime', message: 'Start', t });
+    if (this.state !== 'stopped') this.out.releaseAll(true);
+    this.engine.reset();
+    this.pending = [];
+    this.lineHeld = [null, null, null, null];
+    this.pauseTick = 0;
+    Object.assign(this.ext, { nextTick: 0, anchorTick: 0, anchorMs: t, lost: false });
+    if (this.engine.project.options.programOnStart) {
+      for (const l of this.engine.project.lines) {
+        if (l.program !== null) this.out.send(programChange(l.channel, l.program), t);
+      }
+    }
+    this.state = 'playing';
+    this.emit({ type: 'transport', state: this.state });
+    this.syncChanged();
+  }
+
+  /** FB: carry on from where FC stopped; nothing is reset. The next pulse is the next tick. */
+  private extContinue(t: number): void {
+    this.ext.lastTransport = 'Continue';
+    this.emit({ type: 'realtime', message: 'Continue', t });
+    if (this.state === 'playing') return;
+    const from = this.state === 'paused' ? this.pauseTick : this.engine.horizon;
+    Object.assign(this.ext, { nextTick: from, anchorTick: from, anchorMs: t, lost: false });
+    this.state = 'playing';
+    this.emit({ type: 'transport', state: this.state });
+    this.syncChanged();
+  }
+
+  /**
+   * FC: stop, keeping the position, heads, loop counters and each line's
+   * remaining wait for a later Continue. Sounding notes end when the next
+   * pulse was due (after any note already released for this pulse).
+   */
+  private extStop(t: number): void {
+    this.ext.lastTransport = 'Stop';
+    this.emit({ type: 'realtime', message: 'Stop', t });
+    if (this.state !== 'playing') return;
+    this.pauseTick = this.engine.horizon;
+    this.releasePending(Math.max(this.now(), this.tickToMs(this.pauseTick)));
+    this.ext.lost = false;
+    this.state = 'paused';
+    this.emit({ type: 'transport', state: this.state });
+    this.syncChanged();
+  }
+
+  /** Release every held note at `ms`, forgetting pending note-offs. */
+  private releasePending(ms: number): void {
+    for (const p of this.pending) this.out.noteOff(p.channel, p.pitch, p.id, ms);
+    this.pending = [];
+    this.lineHeld = [null, null, null, null];
+  }
+
+  /**
+   * The clock stopped arriving while running (timeout, input unplugged or
+   * changed). Release notes and hold position; the transport stays "running"
+   * because no Stop was received, so the next pulse simply carries on.
+   */
+  clockInterrupted(): void {
+    if (!this.external) return;
+    this.pulses.reset();
+    if (this.state === 'playing' && !this.ext.lost) {
+      this.ext.lost = true;
+      // After anything already dispatched for the current pulse.
+      this.releasePending(Math.max(this.now(), this.tickToMs(this.engine.horizon)));
+    }
+    this.syncChanged();
+  }
+
+  private watchdog(): void {
+    const now = this.now();
+    if (this.state === 'playing' && !this.ext.lost && now - Math.max(this.ext.lastPulseMs, this.ext.anchorMs) > CLOCK_LOSS_MS) {
+      this.clockInterrupted();
+      return;
+    }
+    this.syncChanged();
+  }
+
+  syncStatus(): SyncStatus {
+    if (!this.external) return 'internal';
+    if (!this.ext.inputReady) return this.state === 'playing' ? 'lost' : 'no-input';
+    if (this.state === 'playing') return this.ext.lost ? 'lost' : 'running';
+    if (this.state === 'paused') return 'stopped';
+    return this.now() - this.ext.lastPulseMs < CLOCK_LOSS_MS ? 'clock' : 'waiting';
+  }
+
+  private syncChanged(): void {
+    const s = this.syncStatus();
+    if (s === this.lastStatus) return;
+    this.lastStatus = s;
+    this.emit({ type: 'sync', status: s });
   }
 }

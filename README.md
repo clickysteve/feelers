@@ -92,6 +92,50 @@ All written for Feelers (none derived from original material):
 - If the interface is unplugged mid-performance, Feelers keeps playing
   silently, says so, and reattaches when it returns.
 
+### Following an external clock (SYNC: INT / EXT)
+
+- **INT** (default): Feelers sets the tempo and runs its own transport.
+- **EXT**: Feelers follows 24 PPQN MIDI Clock from a MIDI input. Choose the
+  input next to SYNC. Every incoming clock pulse (F8) advances Feelers by
+  exactly one tick (24 per quarter note), so the device's clock, not a tempo
+  estimate, drives every note and note-off.
+  - **FA Start**: a fresh performance from the starting state (heads, loop
+    counters and random seed reset), exactly like START.
+  - **FC Stop**: stops and releases every note, keeping the position, heads
+    and each line's remaining wait.
+  - **FB Continue**: carries on from where FC stopped. Nothing is reset.
+  - **F8 while stopped** never starts Feelers; it only updates the measured
+    tempo.
+  - **Status**: WAITING (no clock), CLOCK (clock, waiting for Start or
+    Continue), RUNNING, STOPPED (after FC), LOST (clock vanished while
+    running), NO INPUT. Beside it: pulses received and the last transport
+    byte. **IN** shows the measured tempo, for information only; the BPM
+    control is hidden because it does nothing while following.
+  - **Clock loss**: if no pulse arrives for 0.5 s while running (or the input
+    is unplugged or changed), Feelers releases all notes, holds its position
+    and shows LOST. It never switches to internal clock and never keeps
+    playing at a guessed tempo. The next pulse carries on from the held
+    position; Start or Continue from the device work as usual.
+  - **CLOCK out is off in EXT** so clock is never echoed back to its source.
+  - Local START / PAUSE are disabled in EXT; local **STOP** still stops and
+    resets (the device's next FA or FB starts it again). PANIC works as
+    always. Switching INT / EXT stops and releases everything first.
+  - Song Position Pointer is ignored: Continue resumes from where Feelers
+    stopped.
+- **Latency.** Under INT, notes are scheduled about 0.1 s ahead with exact
+  timestamps. Under EXT, future pulses cannot be known, so each pulse releases
+  only the events up to the next pulse: notes leave as the pulse arrives (plus
+  browser input latency, typically a few milliseconds) and their timing
+  jitter follows the incoming clock and the browser. Events between two
+  pulses (from TIME× or articulation) are placed using the measured pulse
+  period.
+
+**Testing with a Hermod+ (or any clock source):** connect it by USB, choose
+it as the EXT input and Feelers' MIDI output, press play on the Hermod+:
+the status should go CLOCK → RUNNING and IN should show its tempo. Check
+that changing the Hermod+ tempo is followed, that its stop gives STOPPED with
+no stuck notes, and that its continue resumes while its start restarts.
+
 Tested only against a simulated Web MIDI device; no physical MIDI hardware
 has been tested yet. Reports welcome.
 

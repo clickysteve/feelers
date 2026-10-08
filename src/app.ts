@@ -16,7 +16,7 @@ import { MidiAccess, type PortInfo } from './midi/webmidi';
 import { deserialize, serialize } from './persistence/project';
 import { loadCurrent, saveCurrent, saveToLibrary } from './persistence/storage';
 import { TakeRecorder } from './persistence/takes';
-import { Scheduler, WorkerTicker, type TransportState } from './scheduler/scheduler';
+import { Scheduler, WorkerTicker, type ClockSource, type TransportState } from './scheduler/scheduler';
 
 export type Topic = 'project' | 'bank' | 'lines' | 'transport' | 'midi' | 'selection' | 'takes' | 'snapshots' | 'status' | 'heads';
 
@@ -58,6 +58,9 @@ export class App {
   noteListeners = new Set<(ev: NoteEvent, offMs: number) => void>();
   monitor: MonitorEntry[] = [];
   clockCount = 0;
+  /** MIDI inputs available as an external clock source. */
+  inputs: PortInfo[] = [];
+  selectedInput: string | null = null;
   private listeners = new Map<Topic, Set<() => void>>();
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -75,6 +78,7 @@ export class App {
     this.access = new MidiAccess({
       onPortsChanged: (p) => {
         this.ports = p;
+        this.inputs = this.access.inputs();
         this.emit('midi');
       },
       onSelectedLost: () => {
@@ -85,6 +89,17 @@ export class App {
       onSelectedReturned: (id) => {
         this.out.setSink(this.access.open(id));
         this.midiMessage = 'MIDI device reconnected.';
+        this.emit('midi');
+      },
+      onInputLost: () => {
+        this.sched.setInputReady(false);
+        this.sched.clockInterrupted();
+        this.midiMessage = 'Clock input disconnected. Notes released; position held. Reconnect it, or choose another input.';
+        this.emit('midi');
+      },
+      onInputReturned: () => {
+        this.sched.setInputReady(true);
+        this.midiMessage = 'Clock input reconnected. Feelers carries on with the next clock pulse.';
         this.emit('midi');
       },
     });
@@ -98,10 +113,13 @@ export class App {
         this.emit('transport');
       } else if (e.type === 'note') {
         this.visualQueue.push({ ms: e.ms, ev: e.note, offMs: e.offMs });
-      } else if (e.type === 'tempo') {
+      } else if (e.type === 'tempo' || e.type === 'sync') {
         this.emit('transport');
+      } else if (e.type === 'realtime') {
+        this.monitor.push({ t: e.t, text: `IN  ${e.message}` });
       }
     });
+    if (safeGet('feelers.clockSource') === 'external') this.sched.setSource('external');
     this.engine.on((c) => {
       if (c.type === 'cell') this.emitSoon('bank');
       else if (c.type === 'line') this.emitSoon('lines');
@@ -213,14 +231,25 @@ export class App {
   // -------------------------------------------------------------------
   // Transport
 
+  get external(): boolean {
+    return this.sched.external;
+  }
+  private followsClock(): boolean {
+    if (!this.external) return false;
+    this.setStatus('Following an external clock: Start, Stop and Continue come from the clock source. STOP here still stops and resets.');
+    return true;
+  }
   start(): void {
+    if (this.followsClock()) return;
     this.sched.setTempo(this.project.tempo);
     this.sched.start();
   }
   pause(): void {
+    if (this.followsClock()) return;
     this.sched.pause();
   }
   resume(): void {
+    if (this.followsClock()) return;
     this.sched.resume();
   }
   stop(): void {
@@ -228,6 +257,7 @@ export class App {
   }
   /** Space bar behaviour: Start when stopped, otherwise Pause / Continue. */
   togglePlay(): void {
+    if (this.followsClock()) return;
     if (this.transport === 'stopped') this.start();
     else if (this.transport === 'playing') this.pause();
     else this.resume();
@@ -252,12 +282,48 @@ export class App {
     const st = await pending;
     this.midiMessage = st.message;
     this.ports = this.access.ports();
+    this.inputs = this.access.inputs();
     if (st.state === 'ready' && !this.selectedPort && this.ports.length) {
       const remembered = safeGet('feelers.port');
       const pick = this.ports.find((p) => p.id === remembered);
       if (pick) this.selectPort(pick.id);
     }
+    if (st.state === 'ready' && !this.selectedInput) {
+      const remembered = safeGet('feelers.clockInput');
+      if (this.inputs.some((p) => p.id === remembered)) this.selectInput(remembered);
+    }
     this.emit('midi');
+  }
+
+  // -------------------------------------------------------------------
+  // Clock source
+
+  /** INTERNAL: Feelers owns tempo and transport. EXTERNAL: follow incoming MIDI Clock. */
+  setClockSource(source: ClockSource): void {
+    if (source === this.sched.source) return;
+    this.sched.setSource(source);
+    this.sched.setInputReady(this.selectedInput !== null && this.access.inputs().some((p) => p.id === this.selectedInput && p.connected));
+    safeSet('feelers.clockSource', source);
+    this.setStatus(
+      source === 'external'
+        ? 'Following external MIDI Clock. Choose the input that sends clock; the device starts, stops and continues Feelers.'
+        : 'Internal clock: Feelers sets the tempo and runs its own transport.',
+    );
+    this.emit('midi');
+    this.emit('transport');
+  }
+
+  /** Choose the MIDI input that supplies clock. Changing it mid-performance releases notes. */
+  selectInput(id: string | null): void {
+    if (id !== this.selectedInput) this.sched.clockInterrupted();
+    this.selectedInput = id;
+    const ok = this.access.openInput(id, (data, t) => this.sched.receive(data, t));
+    this.sched.setInputReady(ok);
+    if (id) safeSet('feelers.clockInput', id);
+    const name = this.inputs.find((p) => p.id === id)?.name ?? id;
+    this.midiMessage = ok ? `Listening for clock on ${name}` : id ? 'That input is not available.' : 'No clock input selected.';
+    this.emit('midi');
+    this.emit('transport');
   }
 
   selectPort(id: string | null): void {

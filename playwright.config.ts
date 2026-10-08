@@ -10,6 +10,8 @@ export default defineConfig({
   testDir: 'tests/e2e',
   timeout: 30_000,
   fullyParallel: false,
+  // Timing-sensitive MIDI tests: run one at a time.
+  workers: 1,
   reporter: [['list']],
   use: {
     baseURL: 'http://127.0.0.1:4173',

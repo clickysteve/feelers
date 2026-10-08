@@ -93,6 +93,7 @@ Categories:
 | Takes: last nine performances, exported as MIDI files | Historical (nine performances) / Modern extension (SMF export) | |
 | Global Start / Pause / Continue / Stop semantics | Modern extension | Explicit design for use with external sequencers. |
 | MIDI Clock out with Start / Stop / Continue / Song Position | Modern extension | Fingers documented sync with external devices; direction unknown. |
+| External MIDI Clock input (SYNC EXT) with Start / Stop / Continue | Modern extension | Interoperability with hardware; not a reconstruction of Fingers' sync. |
 | Seeded, repeatable randomness | Modern extension | |
 | Performance memories 1-9 | Modern extension | |
 | Legato option for monophonic lines | Independent design | |
