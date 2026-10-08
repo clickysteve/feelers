@@ -131,12 +131,30 @@ or set `FEELERS_CHROMIUM` to a Chromium executable.
 
 ## Deployment
 
-`.github/workflows/pages.yml` type-checks, tests, builds and deploys `dist/`
-to GitHub Pages on every push to `main`. Enable it once in the repository
-settings: **Pages → Build and deployment → Source: GitHub Actions**. The build
-uses relative paths, so it works from any Pages URL.
+`.github/workflows/pages.yml` type-checks, runs the unit and browser tests,
+builds and deploys `dist/` to GitHub Pages on every push to `main` (pull
+requests run the same checks without deploying). Pages must be set to
+**Settings → Pages → Build and deployment → Source: GitHub Actions**.
+
+The build uses relative asset paths (Vite `base: './'`) and contains no
+hostname, so the same files work at a domain root
+(`https://feelers.allmyfriendsaresynths.com/`) and under a project path
+(`https://clickysteve.github.io/feelers/`).
+
+The custom domain is set in **Settings → Pages → Custom domain**, not by a
+file in the repository: for Actions-based deployments GitHub ignores any
+`CNAME` file. Once a custom domain is set, GitHub serves the project site
+there and points the `github.io` project URL at it; that redirect is GitHub
+platform behaviour, not something the app does.
 
 ## Licence
 
-Code: MIT (see [LICENSE](LICENSE)). The notice above applies to the
-relationship with the historical software.
+Feelers' independently written source code is licensed under the MIT License
+(see [LICENSE](LICENSE)). This licence applies only to the original code and
+other original material contained in this repository. It does not grant rights
+in Dr. T's Fingers, MIDI-AX, their documentation, software, assets, trademarks,
+or other third-party material. Product names mentioned in this repository
+belong to their respective owners and are used only to identify them.
+
+See [docs/PROVENANCE.md](docs/PROVENANCE.md) for what was historically
+researched versus independently designed.

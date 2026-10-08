@@ -9,6 +9,15 @@ not affiliated with or endorsed by Emile Tobenfeld or any historical publisher
 or distributor. Feelers is independently implemented and does not distribute
 the original software or its associated assets.
 
+## Licence scope
+
+Feelers' independently written source code is licensed under the MIT License.
+This licence applies only to the original code and other original material
+contained in this repository. It does not grant rights in Dr. T's Fingers,
+MIDI-AX, their documentation, software, assets, trademarks, or other
+third-party material. The `LICENSE` file is the unmodified MIT text; this
+section, not that file, explains its scope.
+
 ## What this repository contains, and what it does not
 
 - All code, wording, interface design, graphics and demonstration material
@@ -23,6 +32,30 @@ the original software or its associated assets.
   not make it, or Fingers, public domain or freely redistributable, and
   Feelers does not treat it as such.
 - No permission or endorsement has been sought or received.
+- Development tools (Vite, TypeScript, Vitest, Playwright) are
+  devDependencies under their own licences; they are not committed to the
+  repository. The production build contains only Feelers' own code plus the
+  small module-loading helper Vite injects (MIT).
+
+## Audit record
+
+Before first publication (October 2026) every tracked file and every path in
+the Git history was reviewed. Findings:
+
+- 50 tracked files, all plain text (TypeScript, CSS, HTML, Markdown, JSON,
+  YAML). No binaries, images, fonts, disk images, archives, presets or example
+  files exist in any commit, and no file was ever added and later deleted.
+- The only icon is an inline SVG favicon drawn for Feelers. No external fonts
+  are loaded; the interface uses the system monospace font.
+- UI labels (PAUSE, MUTE, NEXT, STEP, RESET, REV, REST, SKIP, END, LINK,
+  WOBBLE, DRIFT) are plain functional words chosen for Feelers; help text is
+  original.
+- Demo data is original (see below). Test fixtures are synthetic.
+- The research documents quote only short phrases and article titles from the
+  cited reviews, with attribution, for identification and commentary. No
+  manual text, tables or screenshots are reproduced.
+
+No material needed removing or replacing.
 
 ## Feature provenance
 

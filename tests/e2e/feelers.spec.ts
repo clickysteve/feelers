@@ -277,3 +277,30 @@ test('a performance becomes a downloadable MIDI take', async ({ page }) => {
   const bytes = readFileSync(path!);
   expect(bytes.subarray(0, 4).toString('ascii')).toBe('MThd');
 });
+
+test('the same build works under a project sub-path such as /feelers/', async ({ page }) => {
+  const errors: string[] = [];
+  const failed: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('requestfailed', (r) => failed.push(r.url()));
+  page.on('response', (r) => r.status() >= 400 && failed.push(`${r.status()} ${r.url()}`));
+  // Serve the root build at /feelers/ (as GitHub Pages does for a project site).
+  await page.route('**/feelers/**', async (route) => {
+    const url = new URL(route.request().url());
+    url.pathname = url.pathname.replace(/^\/feelers\//, '/');
+    const res = await route.fetch({ url: url.toString() });
+    await route.fulfill({ response: res });
+  });
+  await page.addInitScript(installFakeMidi);
+  await page.goto('/feelers/');
+  await expect(page.getByTestId('line-3')).toBeVisible();
+  const css = await page.evaluate(() => getComputedStyle(document.querySelector('.topbar')!).borderBottomStyle);
+  expect(css).toBe('solid');
+  await page.getByTestId('start').click();
+  await expect(page.locator('.cell .tab.live').first()).toBeVisible();
+  await page.getByTestId('stop').click();
+  const urls = await page.evaluate(() => performance.getEntriesByType('resource').map((e) => e.name));
+  expect(urls.filter((u) => u.includes('/assets/')).every((u) => u.includes('/feelers/assets/'))).toBe(true);
+  expect(failed).toEqual([]);
+  expect(errors).toEqual([]);
+});
