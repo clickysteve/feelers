@@ -123,6 +123,23 @@ export interface ProjectOptions {
   shiftEdit: boolean;
 }
 
+/** A stored performance state: where every head is and how each line is set. */
+export interface SnapshotLine {
+  heads: Record<Kind, { series: string; pos: number; dir: Direction }>;
+  paused: boolean;
+  mute: boolean;
+  transpose: number;
+  velOffset: number;
+  timeScale: number;
+}
+
+export interface Snapshot {
+  tempo: number;
+  lines: SnapshotLine[];
+}
+
+export const SNAPSHOT_SLOTS = 9;
+
 export interface Project {
   name: string;
   notes: string;
@@ -131,6 +148,8 @@ export interface Project {
   options: ProjectOptions;
   series: Series[];
   lines: LineConfig[];
+  /** Performance memories 1-9 (null = empty). */
+  snapshots: (Snapshot | null)[];
 }
 
 /** Value range per kind. */

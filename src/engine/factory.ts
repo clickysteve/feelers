@@ -2,7 +2,7 @@
  * Helpers for building projects, used by demos, tests and "New".
  */
 import type { Cell, Direction, Kind, LineConfig, Project, Series } from './types';
-import { KINDS, KIND_RANGE } from './types';
+import { KINDS, KIND_RANGE, SNAPSHOT_SLOTS } from './types';
 
 export const SERIES_PER_KIND = 4;
 
@@ -126,6 +126,7 @@ export function makeProject(p: Partial<Project> & { series: Series[]; lines: Lin
     tempo: 110,
     seed: 1988,
     options: { clockOut: false, programOnStart: true, shiftEdit: false },
+    snapshots: Array.from({ length: SNAPSHOT_SLOTS }, () => null),
     ...p,
     series: fullBank(p.series),
   };

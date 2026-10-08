@@ -47,6 +47,14 @@ export class MidiOutput {
     return this.sink;
   }
 
+  private clearListeners = new Set<() => void>();
+
+  /** Called whenever queued messages are cancelled (stop, panic, device switch). */
+  onClear(fn: () => void): () => void {
+    this.clearListeners.add(fn);
+    return () => this.clearListeners.delete(fn);
+  }
+
   tap(fn: MidiTap): () => void {
     this.taps.add(fn);
     return () => this.taps.delete(fn);
@@ -153,6 +161,7 @@ export class MidiOutput {
       }
     }
     this.queuedOffs.clear();
+    if (cancelQueued) for (const fn of this.clearListeners) fn();
     if (this.latestQueued > t) t = this.latestQueued + 1;
     this.held.clear();
     for (const h of release.values()) this.send(noteOff(h.channel, h.note), t);

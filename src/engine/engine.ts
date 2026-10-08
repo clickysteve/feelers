@@ -13,7 +13,7 @@
  */
 import { Rng } from './rng';
 import { newHead, readHead, type HeadState } from './series';
-import type { Direction, Kind, LineConfig, Project, Series } from './types';
+import type { Direction, Kind, LineConfig, Project, Series, Snapshot } from './types';
 import { KINDS, LINE_COUNT } from './types';
 
 export interface HeadRead {
@@ -331,4 +331,58 @@ export class Engine {
       }
     }
   }
+}
+
+// -------------------------------------------------------------------------
+// Snapshots (performance memories)
+
+
+/** Capture the live performance state of all lines. */
+export function takeSnapshot(e: Engine, tempo: number): Snapshot {
+  return {
+    tempo,
+    lines: e.lines.map((rt, i) => {
+      const cfg = e.cfg(i);
+      const heads = {} as Snapshot['lines'][number]['heads'];
+      for (const k of KINDS) {
+        const h = rt.heads[k];
+        // Store the cell last read, so recall replays from that note.
+        const pos = h.lastIndex !== null && h.lastSeries === h.series ? h.lastIndex : h.pos;
+        heads[k] = { series: h.series, pos, dir: h.dir };
+      }
+      return {
+        heads,
+        paused: rt.paused,
+        mute: cfg.mute,
+        transpose: cfg.transpose,
+        velOffset: cfg.velOffset,
+        timeScale: cfg.timeScale,
+      };
+    }),
+  };
+}
+
+/** Apply a snapshot from tick `at`. Line timing (next onsets) is kept. */
+export function recallSnapshot(e: Engine, snap: Snapshot, at: number): void {
+  snap.lines.forEach((sl, i) => {
+    if (i >= e.lines.length) return;
+    const cfg = e.cfg(i);
+    cfg.mute = sl.mute;
+    cfg.transpose = sl.transpose;
+    cfg.velOffset = sl.velOffset;
+    cfg.timeScale = sl.timeScale;
+    const rt = e.lines[i]!;
+    for (const k of KINDS) {
+      const s = sl.heads[k];
+      if (!e.series(s.series) || e.series(s.series)!.kind !== k) continue;
+      const h = rt.heads[k];
+      h.series = s.series;
+      h.pos = s.pos;
+      h.dir = s.dir;
+      h.loops = {};
+      h.skip = false;
+      cfg.heads[k].series = s.series;
+    }
+    e.setPaused(i, sl.paused, at);
+  });
 }
