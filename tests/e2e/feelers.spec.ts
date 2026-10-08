@@ -253,3 +253,27 @@ test('phone width has no horizontal page scroll', async ({ page }) => {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(overflow).toBeLessThanOrEqual(0);
 });
+
+test('audio preview listens to the MIDI stream without errors', async ({ page }) => {
+  const errors = await boot(page);
+  await page.getByTestId('preview').click();
+  await expect(page.getByTestId('preview')).toHaveAttribute('aria-pressed', 'true');
+  await page.getByTestId('start').click();
+  await page.waitForTimeout(1000);
+  await page.getByTestId('stop').click();
+  expect(errors).toEqual([]);
+});
+
+test('a performance becomes a downloadable MIDI take', async ({ page }) => {
+  await boot(page);
+  await page.getByTestId('start').click();
+  await page.waitForTimeout(1200);
+  await page.getByTestId('stop').click();
+  await page.getByTestId('menu').click();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByTestId('take-0').click()]);
+  expect(download.suggestedFilename()).toMatch(/\.mid$/);
+  const path = await download.path();
+  const { readFileSync } = await import('node:fs');
+  const bytes = readFileSync(path!);
+  expect(bytes.subarray(0, 4).toString('ascii')).toBe('MThd');
+});

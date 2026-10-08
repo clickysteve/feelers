@@ -109,6 +109,7 @@ has been tested yet. Reports welcome.
 - [docs/FORMAT.md](docs/FORMAT.md): the project file format.
 - [docs/MIDI-AX.md](docs/MIDI-AX.md): MIDI-AX research and a future
   Performance Mode.
+- [docs/ROADMAP.md](docs/ROADMAP.md): what remains.
 
 ## Development
 
