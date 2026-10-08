@@ -4,6 +4,19 @@ Feelers is a static TypeScript application (Vite, no runtime dependencies).
 The musical engine knows nothing about time sources, MIDI or the DOM, so it
 can be tested deterministically and driven by other controllers later.
 
+## Three layers
+
+| Layer | What | Where |
+| --- | --- | --- |
+| **Historical musical substrate** | The Fingers model as documented in the manual: typed columns of up to 16 elements, End of Series, Column Link, control elements as attributes of elements, Loop slots, Rest / rest, Time before the note, S/L in sixteenths, persistent `?` / `¿` randomisation with Minimum Time and Pitch Limit, Restore Last Start. Behaviours the sources leave open are explicit choices in `src/engine/choices.ts`. | `src/engine/series.ts`, `engine.ts`, `types.ts` |
+| **Common modern instrument facilities** | Web MIDI, the lookahead scheduler, note safety and Panic, external MIDI Clock, Scale Mode, persistence and migration, palettes, the browser UI. Part of the core instrument; no "extended mode" is needed to use them. | `src/scheduler`, `src/midi`, `src/engine/scale.ts`, `src/persistence`, `src/ui` |
+| **Explicit extensions** | New compositional behaviour, labelled EXT in the interface: WOBBLE, per-column randomisation and bounds, performance memories, rotate / retrograde. | spread, each marked in code comments and help |
+
+The historical model stays identifiable and testable with the extensions
+unused: `tests/unit/series.test.ts` and `engine.test.ts` exercise the
+documented rules directly, and nothing in the substrate depends on an
+extension. See [BEHAVIOUR.md](BEHAVIOUR.md) for the layer of every behaviour.
+
 ```
             ┌──────────────── UI (src/ui) ────────────────┐
             │ bank · editor · lines · topbar · monitor    │
@@ -27,46 +40,74 @@ can be tested deterministically and driven by other controllers later.
 
 | Path | Responsibility |
 | --- | --- |
-| `src/engine/types.ts` | Plain-data model: `Project`, `Series`, `Cell`, `LineConfig`, `HeadConfig`, `Snapshot`. |
-| `src/engine/series.ts` | Traversal: `readHead()` walks one head over values and control elements; randomisation; cycle length. |
-| `src/engine/engine.ts` | `Engine`: runtime line state, note assembly, `generate(untilTick)`, interventions, snapshots. |
+| `src/engine/types.ts` | Plain-data model: `Project`, `Column`, `El` (element), `LineConfig`, `HeadConfig`, `Snapshot`, ranges. |
+| `src/engine/series.ts` | Traversal over columns: series boundaries (End, Column Link), Skip, Loop, blanks, `readHead()` / `peekHead()`, randomisation and its limits, cycle length. |
+| `src/engine/engine.ts` | `Engine`: runtime line state, note assembly (Time before the note, rest advance rules), `generate(untilTick)`, interventions, Restore Last Start, snapshots. |
+| `src/engine/choices.ts` | The unresolved historical behaviours, as switchable choices with documented defaults. |
+| `src/engine/scale.ts` | Scale Mode: scales, deterministic quantisation, inheritance. |
 | `src/engine/rng.ts` | Seeded PRNG (mulberry32) and gaussian deviates. |
-| `src/engine/factory.ts` | Building projects: compact series notation, note names, defaults. |
-| `src/scheduler/scheduler.ts` | Lookahead scheduling, tempo anchor, transport, MIDI clock, monophony, note-off queue. |
+| `src/engine/factory.ts` | Building projects: compact column notation, note names, defaults. |
+| `src/scheduler/scheduler.ts` | Lookahead scheduling, tempo anchor, transport, MIDI clock out and in, overlap modes, note-off queue. |
+| `src/scheduler/pulses.ts` | Tempo estimate of an incoming clock (display only). |
 | `src/midi/output.ts` | `MidiOutput`: id-based note tracking, panic, device switching, cancellation safety, taps. |
-| `src/midi/webmidi.ts` | Web MIDI access, port list, hot-plug events. |
+| `src/midi/webmidi.ts` | Web MIDI access, port lists, hot-plug events. |
 | `src/midi/messages.ts` | Message builders and descriptions. |
 | `src/audio/preview.ts` | Web Audio preview synth fed by a `MidiOutput` tap. |
-| `src/persistence/project.ts` | Versioned file format, validation and repair. |
+| `src/persistence/project.ts` | Versioned file format (v2), validation and repair. |
+| `src/persistence/migrate.ts` | v1 to v2 conversion with a report. |
 | `src/persistence/storage.ts` | localStorage autosave and library (all access guarded). |
 | `src/persistence/takes.ts` | Take recorder and Standard MIDI File writer. |
 | `src/demos/demos.ts` | Original demonstration projects. |
 | `src/app.ts` | Application controller: owns everything, exposes actions, publishes topics. |
+| `src/ui/palette.ts` | Palette roles, built-ins, library, import / export, CSS generation. |
 | `src/ui/*` | DOM views. No framework; each view subscribes to topics and patches itself. |
 
-## Parameter streams and line state
+## Score, series and line state
 
-The *material* is the series bank (`Project.series`). The *performance state*
-is per line:
+The *material* is the score (`Project.columns`): columns of up to 16
+elements. An element is a value (or blank) with optional attributes
+(`skip`, `rest`, `ar`, `end`), or a Loop slot. A *series* is not stored: it
+is derived from End flags and Column Links (`seriesStart`, `rawNext`,
+`rawPrev` in `series.ts`). Heads address elements as `{col, i}`.
+
+The *performance state* is per line:
 
 - `LineConfig` (saved): channel, program, transpose, velocity offset, time
-  scale, delay, legato, mute, and for each kind a `HeadConfig` (series, start
-  cell, start direction).
+  scale, delay, overlap mode, mute, line scale, and for each kind a
+  `HeadConfig` (column, start element, start direction).
 - `LineRuntime` (not saved, except through snapshots): four `HeadState`s
-  (series, position, direction, loop counters, pending skip, last read cell),
-  the tick of the next onset, pause state and remaining wait.
+  (position, direction, loop counters, last element read), the Time value
+  already read for the next note (`pending`), the tick of the next onset,
+  pause state and remaining wait.
 
-`readHead()` examines cells starting at the head's position, applying control
-elements, until it reaches a value or a REST, then advances one cell. The
-note is assembled from the four reads (see BEHAVIOUR section 2). There is no
-precomputed note list anywhere: notes exist only once they are assembled,
-moments before they sound. This is what lets edits, reversals and series
-reassignment take effect musically while playing.
+`readHead()` examines elements from the head's position, passing over
+skipped and blank elements and acting on Loops, until it reaches a value or a
+rest, then moves the head one element on. `peekHead()` does the same on a
+copy without randomising, which `assemble()` uses to find Rest marks before
+any head moves: a Rest (R) holds the heads that did not read it.
+
+A note is assembled from this note's own Time value (read with the previous
+note), the Pitch, Velocity and S/L reads, and the *next* Time value, which
+sets the gap to the next note and the note's length. There is no
+precomputed note list: notes exist only once they are assembled, moments
+before they sound, so edits, reversals and redirections take effect while
+playing.
 
 `Engine.generate(until)` repeatedly takes the line with the earliest next
 onset (ties by line number) and assembles its note, until every line's next
 onset is at or beyond `until`. Generation is incremental: generating in many
 small chunks gives exactly the same notes as one large chunk (tested).
+
+## Scale Mode
+
+`engine.assemble()` computes `prePitch` (series value plus transposition,
+folded into 0-127), then `constrain(prePitch, effectiveScale(global, line))`.
+The `NoteEvent` carries `pitch` (emitted), `prePitch` and `scaleDelta`, so
+every view can show source and output. The scheduler only ever sees
+`pitch`; note-offs use the pitch that was actually sent, so changing the
+scale while notes sound cannot strand a note. The bank's preview uses the
+same functions (`lensView` in `ui/bank.ts`) on the stored values, so what it
+marks is exactly what the engine would play.
 
 ## Time
 
@@ -96,7 +137,7 @@ old tempo, everything after uses the new one, with no gap or overlap (tested).
 
 | Action | Engine | Scheduler | MIDI (with CLOCK on) |
 | --- | --- | --- | --- |
-| Start | `reset()`: start cells, start directions, seed | anchor at now + 40 ms | Program changes (option), FA, then F8 x 24/qn |
+| Start | `reset()`: start elements, directions, seed, Pitch ranges; `captureStart()` for Restore Last Start | anchor at now + 40 ms | Program changes (option), FA, then F8 x 24/qn |
 | Pause | untouched | stop pumping at the horizon; pending note-offs sent at the pause point | FC |
 | Continue | untouched | re-anchor the paused tick at now + 40 ms | FB, clock resumes at the next tick |
 | Stop | `reset()` | cancel queued messages, release all notes now | FC, then F2 00 00 (Song Position 0) |
@@ -116,9 +157,12 @@ when every id holding it has been released. This guarantees:
   ignored instead of cutting a newer note;
 - a channel change releases the old note on the old channel.
 
-**Monophony** is enforced in the scheduler: each line holds at most one
-pending note-off; a new note cuts the previous one at its onset (strict), or
-just after its onset (legato). Same-pitch repeats are always cut first.
+**Overlap** is handled in the scheduler per line. AS WRITTEN (Fingers) keeps
+every note's computed length, so a line may sound several notes; MONO cuts
+the previous note at the new onset; LEGATO cuts it just after. In every mode
+a note of the same pitch and channel on the same line is released before it
+is struck again, and muting, pausing a line or changing its channel releases
+every note the line holds.
 
 **Cancellation.** Stop and panic call `MIDIOutput.clear()` where supported,
 which drops messages queued for the future, including note-offs already
@@ -144,7 +188,9 @@ It never feeds anything back. A cancelled stream (stop, panic) silences it.
 ## UI update model
 
 - Views subscribe to topics (`project`, `bank`, `lines`, `heads`, `transport`,
-  `midi`, `selection`, `snapshots`, `takes`, `status`).
+  `midi`, `selection`, `snapshots`, `takes`, `status`, `scale`).
+- Colours come only from palette roles (CSS custom properties); see
+  [DESIGN.md](DESIGN.md).
 - Note events from the scheduler are queued with their sounding time; the
   animation-frame loop releases them when due, so head tabs, the NOTE readout,
   cell flashes and the field show what is *heard*, not what was scheduled 100
@@ -156,8 +202,11 @@ It never feeds anything back. A cancelled stream (stop, panic) silences it.
 
 See [FORMAT.md](FORMAT.md). The current project autosaves to localStorage
 800 ms after any change; named saves live in a browser library; JSON export
-and import use the same versioned format. Loading always goes through
-validation and repair.
+and import use the same versioned format (v2). Loading always goes through
+migration (v1 files), validation and repair; a conversion report is added to
+the project notes. Palettes and device choices are browser preferences
+(`feelers.palette.*`, `feelers.port`, `feelers.clockSource`,
+`feelers.clockInput`), never part of a project.
 
 ## External clock
 
@@ -217,16 +266,29 @@ browser provides them).
 
 ## Testing
 
-- `tests/unit` (Vitest, Node): traversal and control elements, randomisation
-  statistics, note assembly, interventions, determinism, the scheduler with a
-  fake clock and manual ticker against a recording MIDI sink that emulates
-  `clear()`, transport and clock messages, device loss, panic, persistence
-  round trips and repair, snapshots, takes and the SMF writer.
-- `tests/e2e` (Playwright, Chromium): the real built app with a simulated Web
-  MIDI device injected before load; checks musical output, live edits,
-  reversal, mute, channel isolation, pause/continue/clock bytes, disconnect
-  and reconnect, panic, keyboard, editor, autosave, import, demos, memories,
-  no-MIDI browsers and phone width.
+- `tests/unit` (Vitest, Node):
+  - `series.test.ts`: columns, End, Column Link (adjacent, non-adjacent,
+    wrapping, rings, backwards), Skip (overrides, beside End), Loops (counts,
+    0, consecutive, backwards, across links, both count readings), blanks,
+    rests, randomisation (persistence, the two probabilities, Type n,
+    gaussian average, Minimum Time, Pitch Limit, limits only on randomised
+    values), WOBBLE.
+  - `engine.test.ts`: Time before the note (both first-note readings), length
+    from the next Time value, S/L 1 / 15 / 16 / 24, Rest and rest advance
+    rules, interventions, Restore Last Start, determinism.
+  - `scale.test.ts`: every scale x root x direction x pitch against a
+    brute-force reference, ties, octave and range edges, inheritance,
+    transposition before the scale, live changes, persistence, note safety,
+    internal and external clock.
+  - `migration.test.ts`: v1 projects against note streams recorded from the v1
+    engine, structural conversion, overflow, snapshots, repair.
+  - `scheduler.test.ts`, `external-clock.test.ts`: timing, overlap modes,
+    transport, clock in and out, device loss, panic.
+  - `persistence.test.ts`, `app.test.ts`, `palette.test.ts`.
+- `tests/e2e` (Playwright, Chromium): the built app with a simulated Web
+  MIDI device; musical output, live edits, control element marks, Scale Mode
+  marks and readouts, Restore Last Start, palettes, v1 import, external
+  clock, no-MIDI browsers, phone width and the `/feelers/` sub-path.
 
 No physical MIDI hardware has been tested by the automated suite.
 
@@ -235,7 +297,8 @@ No physical MIDI hardware has been tested by the automated suite.
 - **Controllers.** Everything a performer can do is an `Engine` or `App`
   method taking an `at` tick. A MIDI-CC mapper or an X/Y gesture surface can
   call the same methods (see [MIDI-AX.md](MIDI-AX.md)).
-- **External clock.** Implemented in the scheduler (see above); the engine
-  is unaffected because it only sees ticks.
-- **More control elements.** Add a `Cell` variant and a case in `readHead()`;
-  the UI renders unknown kinds generically.
+- **External clock.** Implemented in the scheduler; the engine only sees ticks.
+- **Historical choices.** `Engine` takes an `EngineChoices` object; an
+  emulator-verified answer changes one default.
+- **Later batches** (audit section 8): fixed values, advance buttons, Save
+  Starting Points, Shadows, Undo, configurable column types, `.FIN` import.

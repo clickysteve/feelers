@@ -1,6 +1,14 @@
 # Historical fidelity audit
 
-Status: research only. No source code or other documentation was changed in
+**Implementation status (later update).** Batch 1 (section 8) has been
+implemented: format v2 with columns and element attributes, End and Column
+Link, Loop, Skip, Rest / rest, Time before the note, S/L in sixteenths with
+overlap as written, `?` / `¿` randomisation with Minimum Time and Pitch Limit,
+and Restore Last Start. The open points of section 4.1 are recorded as
+explicit choices in UNCERTAINTIES.md, and the other documents have been
+corrected. The audit text below is unchanged and remains the evidence base.
+
+Original status: research only. No source code or other documentation was changed in
 this pass. Findings here supersede the evidence base described in
 RESEARCH.md, BEHAVIOUR.md, UNCERTAINTIES.md, PROVENANCE.md and MIDI-AX.md, but
 those files have deliberately not been edited yet; see "Documentation

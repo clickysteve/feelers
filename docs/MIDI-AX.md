@@ -1,8 +1,11 @@
 # MIDI-AX and a future Performance Mode
 
 MIDI-AX is researched here separately from Fingers, and is **not implemented**
-in this version. Evidence tags as in [RESEARCH.md](RESEARCH.md); all of it
-comes from search excerpts of TAMW, MyAtari03 and SOS01.
+in this version. This page was first written from search excerpts of TAMW,
+MyAtari03 and SOS01; the historical audit then read the MIDI-AX preliminary
+reference (AXM), whose "Fingers Changes" section settles which features are
+MIDI-AX additions ([HISTORICAL_AUDIT.md](HISTORICAL_AUDIT.md), section 4.2).
+None of the MIDI-AX additions may be attributed to Fingers.
 
 ## What MIDI-AX was
 
@@ -21,8 +24,10 @@ comes from search excerpts of TAMW, MyAtari03 and SOS01.
 | Four lines from Tim / Pit / Vel / S/L series | DOCUMENTED | DOCUMENTED (pitch, velocity, duration) |
 | Series control elements, loops to 999 | DOCUMENTED | INFERRED (same screen "looks a lot like" Fingers) |
 | Per-line pause, mute, direction, channel, program, transposition | DOCUMENTED | DOCUMENTED |
-| Time Adjust | DOCUMENTED | "time division" DOCUMENTED; relation UNKNOWN |
-| Linking lines to each other | Not found | DOCUMENTED, meaning UNKNOWN |
+| Time Adjust | DOCUMENTED | "time division" is most likely Tm (INFERRED) |
+| Linking lines to each other | No | DOCUMENTED (AXM): link objects; after each note or when the Time series recycles, the linked line's next note is scheduled (`*`) or its icons jump to the tops of their columns (T, P, V, S) |
+| Fixed values in the line display | DOCUMENTED (FM ch. 4) | Removed in MIDI-AX (AXM) |
+| Lines starting KCS sequences | No | DOCUMENTED (AXM) |
 | Randomisation (Amount / Type / gaussian) | DOCUMENTED | UNKNOWN |
 | Tempo slider | Not found | DOCUMENTED |
 | Mouse gestures playing notes and velocities | No | DOCUMENTED |
@@ -72,10 +77,11 @@ add, without changing the core model:
    Destinations are existing `App` actions, applied at the horizon.
 4. **MIDI CC in.** The same matrix, with a learn function, for hardware
    controllers and, via MIDI-to-CV gear in reverse, modular sources.
-5. **Line relationships.** Possible readings of MIDI-AX's "linking to other
-   lines": one line's head advances only when another plays (a conductor), or
-   a line borrows another line's next time value. Both fit `Engine` as new
-   options on `LineConfig`.
+5. **Line relationships.** MIDI-AX's line linking is now documented (see the
+   table): a line can trigger another line's next note, or reset its icons,
+   after each note or when its Time series recycles. It fits `Engine` as an
+   option on `LineConfig`, applied in `assemble()`, and would be labelled as
+   a MIDI-AX-inspired extension.
 
 Each of these is a modern extension and would be labelled as such in
 PROVENANCE.md.
